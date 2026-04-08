@@ -530,33 +530,101 @@ app.get('/api/stocks/history', async (req, res) => {
 });
 
 // ── Fyers Instruments (all NSE stocks) ───────────────────
+// Cache instruments in memory — reload once per day
+let _instrumentsCache = null;
+let _instrumentsTime  = 0;
+
 app.get('/api/instruments', async (req, res) => {
   try {
     const axios = require('axios');
-    // Fyers public instruments CSV — no auth needed
+    const now = Date.now();
+
+    // Return cache if < 6 hours old
+    if (_instrumentsCache && (now - _instrumentsTime) < 6*60*60*1000) {
+      return res.json({ success: true, count: _instrumentsCache.length, stocks: _instrumentsCache, cached: true });
+    }
+
+    // Fyers public instruments CSV
     const url = 'https://public.fyers.in/sym_details/NSE_CM.csv';
-    const response = await axios.get(url, { timeout: 15000 });
+    const response = await axios.get(url, { timeout: 20000 });
     const lines  = response.data.split('\n').filter(Boolean);
     const stocks = [];
+    const seen   = new Set();
 
-    lines.forEach(line => {
+    lines.forEach((line, idx) => {
+      if (idx === 0) return; // skip header
       const cols = line.split(',');
-      // Format: Fytoken,ShortName,Exchange,Segment,LotSize,TickSize,ISIN,TradingSession,LastUpdateDate,ExpiryDate,SymbolTicker,Exchange,Segment,Scrip,Underlying
-      if (cols.length < 14) return;
-      const sym    = cols[13]?.trim(); // symbol like RELIANCE
-      const ticker = cols[10]?.trim(); // NSE:RELIANCE-EQ
-      if (!sym || !ticker || !ticker.includes('NSE:') || !ticker.includes('-EQ')) return;
-      stocks.push({
-        symbol: ticker,
-        name:   sym,
-        token:  cols[0]?.trim()
-      });
+      if (cols.length < 11) return;
+
+      // Fyers NSE_CM.csv format (may vary):
+      // Col 0: Fytoken, Col 1: SymbolDetails, Col 2: ExSymbol,
+      // Col 3: Exchange, Col 4: Segment, Col 5: LotSize,
+      // Col 6: TickSize, Col 7: ISIN, Col 8: TradingSession,
+      // Col 9: LastUpdateDate, Col 10: ExpiryDate,
+      // Col 11: SymbolTicker (NSE:RELIANCE-EQ), Col 12: Exchange, Col 13: Segment, Col 14: Scrip
+
+      // Try col 11 first (most common position for full symbol)
+      let ticker = (cols[11]||'').trim().replace(/"/g,'');
+      let name   = (cols[14]||cols[2]||cols[1]||'').trim().replace(/"/g,'');
+
+      // Fallback: search all cols for NSE:*-EQ pattern
+      if (!ticker.includes('NSE:') || !ticker.includes('-EQ')) {
+        for (const col of cols) {
+          const t = col.trim().replace(/"/g,'');
+          if (t.startsWith('NSE:') && t.endsWith('-EQ')) { ticker = t; break; }
+        }
+      }
+
+      if (!ticker || !ticker.startsWith('NSE:') || !ticker.endsWith('-EQ')) return;
+      if (seen.has(ticker)) return;
+      seen.add(ticker);
+
+      // Clean name
+      if (!name || name.length < 2) name = ticker.replace('NSE:','').replace('-EQ','');
+
+      stocks.push({ symbol: ticker, name: name.slice(0,40), token: (cols[0]||'').trim() });
     });
 
-    res.json({ success: true, count: stocks.length, stocks });
+    if (stocks.length > 0) {
+      _instrumentsCache = stocks;
+      _instrumentsTime  = now;
+      logger.info('[INSTRUMENTS] Loaded ' + stocks.length + ' NSE stocks');
+      return res.json({ success: true, count: stocks.length, stocks });
+    }
+
+    // If parsing failed, return basic fallback list
+    throw new Error('No stocks parsed from CSV');
   } catch (err) {
     logger.error('[INSTRUMENTS]', err.message);
-    res.status(500).json({ success: false, error: err.message });
+    // Return fallback list
+    const fallback = [
+      {symbol:'NSE:RELIANCE-EQ',name:'Reliance Industries'},{symbol:'NSE:TCS-EQ',name:'TCS'},
+      {symbol:'NSE:HDFCBANK-EQ',name:'HDFC Bank'},{symbol:'NSE:INFY-EQ',name:'Infosys'},
+      {symbol:'NSE:ICICIBANK-EQ',name:'ICICI Bank'},{symbol:'NSE:SBIN-EQ',name:'SBI'},
+      {symbol:'NSE:BHARTIARTL-EQ',name:'Airtel'},{symbol:'NSE:WIPRO-EQ',name:'Wipro'},
+      {symbol:'NSE:BAJFINANCE-EQ',name:'Bajaj Finance'},{symbol:'NSE:LT-EQ',name:'L&T'},
+      {symbol:'NSE:AXISBANK-EQ',name:'Axis Bank'},{symbol:'NSE:TATAMOTORS-EQ',name:'Tata Motors'},
+      {symbol:'NSE:MARUTI-EQ',name:'Maruti Suzuki'},{symbol:'NSE:SUNPHARMA-EQ',name:'Sun Pharma'},
+      {symbol:'NSE:TITAN-EQ',name:'Titan'},{symbol:'NSE:NTPC-EQ',name:'NTPC'},
+      {symbol:'NSE:ONGC-EQ',name:'ONGC'},{symbol:'NSE:ITC-EQ',name:'ITC'},
+      {symbol:'NSE:HCLTECH-EQ',name:'HCL Tech'},{symbol:'NSE:KOTAKBANK-EQ',name:'Kotak Bank'},
+      {symbol:'NSE:ADANIPORTS-EQ',name:'Adani Ports'},{symbol:'NSE:ZOMATO-EQ',name:'Zomato'},
+      {symbol:'NSE:TATASTEEL-EQ',name:'Tata Steel'},{symbol:'NSE:DLF-EQ',name:'DLF'},
+      {symbol:'NSE:IRCTC-EQ',name:'IRCTC'},{symbol:'NSE:HAL-EQ',name:'HAL'},
+      {symbol:'NSE:BEL-EQ',name:'BEL'},{symbol:'NSE:TATAPOWER-EQ',name:'Tata Power'},
+      {symbol:'NSE:JSWSTEEL-EQ',name:'JSW Steel'},{symbol:'NSE:HINDALCO-EQ',name:'Hindalco'},
+      {symbol:'NSE:VEDL-EQ',name:'Vedanta'},{symbol:'NSE:COALINDIA-EQ',name:'Coal India'},
+      {symbol:'NSE:GAIL-EQ',name:'GAIL'},{symbol:'NSE:IOC-EQ',name:'IOC'},
+      {symbol:'NSE:BPCL-EQ',name:'BPCL'},{symbol:'NSE:DRREDDY-EQ',name:"Dr Reddy's"},
+      {symbol:'NSE:CIPLA-EQ',name:'Cipla'},{symbol:'NSE:LUPIN-EQ',name:'Lupin'},
+      {symbol:'NSE:APOLLOHOSP-EQ',name:'Apollo Hospitals'},{symbol:'NSE:DMART-EQ',name:'DMart'},
+      {symbol:'NSE:HINDUNILVR-EQ',name:'HUL'},{symbol:'NSE:NESTLEIND-EQ',name:'Nestle'},
+      {symbol:'NSE:TECHM-EQ',name:'Tech Mahindra'},{symbol:'NSE:POWERGRID-EQ',name:'Power Grid'},
+      {symbol:'NSE:TRENT-EQ',name:'Trent'},{symbol:'NSE:GODREJCP-EQ',name:'Godrej Consumer'},
+      {symbol:'NSE:DABUR-EQ',name:'Dabur'},{symbol:'NSE:SAIL-EQ',name:'SAIL'},
+      {symbol:'NSE:PNB-EQ',name:'Punjab National Bank'},{symbol:'NSE:BANKBARODA-EQ',name:'Bank of Baroda'},
+    ];
+    res.json({ success: true, count: fallback.length, stocks: fallback, fallback: true });
   }
 });
 

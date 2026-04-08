@@ -1039,22 +1039,28 @@ function StockListView({ selectedSymbols, setSelectedSymbols, onSaveToServer }) 
   const [allStocks, setAllStocks] = useState(INDIAN_STOCKS);
   const [loadingStocks, setLoadingStocks] = useState(false);
 
-  // Load all NSE stocks from Fyers instruments
+  // Load all NSE stocks from Fyers instruments API
   useEffect(() => {
     const load = async () => {
       setLoadingStocks(true);
       try {
         const r = await api.get('/api/instruments');
         if (r.stocks?.length > 0) {
-          // Merge with INDIAN_STOCKS (keep prices from fallback)
           const merged = r.stocks.map(s => ({
             symbol: s.symbol,
             name:   s.name,
             price:  INDIAN_STOCKS.find(i=>i.symbol===s.symbol)?.price || 0
           }));
+          // Sort alphabetically by symbol
+          merged.sort((a,b) => a.symbol.localeCompare(b.symbol));
           setAllStocks(merged);
+        } else {
+          // Fallback: keep INDIAN_STOCKS if API fails
+          setAllStocks(INDIAN_STOCKS);
         }
-      } catch(e) {}
+      } catch(e) {
+        setAllStocks(INDIAN_STOCKS);
+      }
       setLoadingStocks(false);
     };
     load();
@@ -1325,56 +1331,67 @@ function TestSignalView({ authStatus, funds: globalFunds, setFunds: setGlobalFun
 
 // ── Risk & Reward View ────────────────────────────────────
 function RiskRewardView({ rrConfig, setRrConfig, selectedSymbols, ticks, authStatus, funds: globalFunds, setFunds: setGlobalFunds }) {
-  const [cfg,   setCfg]  = useState(rrConfig);
-  const [bLoad, setBLoad]= useState(false);
-
+  const [bLoad, setBLoad] = useState(false);
   const funds = globalFunds || [];
 
-  // Sync cfg whenever parent rrConfig changes (including capital from balance)
-  useEffect(()=>{ setCfg(prev => ({ ...prev, ...rrConfig })); }, [rrConfig.capital, rrConfig.leverage, rrConfig.riskPct, rrConfig.rrRatio, rrConfig.maxSLPerDay]);
-
-  // Fetch live balance and auto-fill capital from broker
+  // ── Fetch balance and update global rrConfig capital ────
   const fetchAndFill = async () => {
-    if (!authStatus?.isAuthenticated) return;
     setBLoad(true);
     try {
       const r = await api.get('/api/portfolio/funds');
       if (r.funds?.length > 0) {
         setGlobalFunds(r.funds);
-        const avail = r.funds.find(f =>
-          (f.title||'').toLowerCase().includes('available') ||
-          (f.title||'').toLowerCase().includes('free') ||
-          f.id === 'free_balance'
-        );
-        const val = avail ? (avail.equityAmount??avail.value??avail.currentValue??0) : 0;
-        if (val > 0) setCfg(p => ({ ...p, capital: Math.floor(val) }));
+        // Find available balance — try multiple field names
+        let bal = 0;
+        for (const f of r.funds) {
+          const t = (f.title||f.id||'').toLowerCase();
+          const v = parseFloat(f.equityAmount??f.value??f.currentValue??f.val??0);
+          if (v > 0 && (t.includes('available') || t.includes('free') || t.includes('cash'))) {
+            bal = Math.floor(v); break;
+          }
+        }
+        if (bal === 0 && r.funds[0]) {
+          bal = Math.floor(parseFloat(r.funds[0].equityAmount??r.funds[0].value??r.funds[0].currentValue??0));
+        }
+        if (bal > 0) setRrConfig(p => ({ ...p, capital: bal }));
       }
     } catch(e) {}
     setBLoad(false);
   };
 
-  // Auto-fill on mount — use global funds if available
+  // Auto-fill from existing global funds on mount
   useEffect(() => {
     if (funds.length > 0) {
-      const avail = funds.find(f =>
-        (f.title||'').toLowerCase().includes('available') ||
-        (f.title||'').toLowerCase().includes('free')
-      ) || funds[0];
-      const val = Math.floor(avail?.equityAmount??avail?.value??avail?.currentValue??0);
-      if (val > 0) setCfg(p => ({ ...p, capital: val }));
+      let bal = 0;
+      for (const f of funds) {
+        const t = (f.title||f.id||'').toLowerCase();
+        const v = parseFloat(f.equityAmount??f.value??f.currentValue??f.val??0);
+        if (v > 0 && (t.includes('available')||t.includes('free')||t.includes('cash'))) {
+          bal = Math.floor(v); break;
+        }
+      }
+      if (bal === 0 && funds[0]) bal = Math.floor(parseFloat(funds[0].equityAmount??funds[0].value??funds[0].currentValue??0));
+      if (bal > 0) setRrConfig(p => ({ ...p, capital: bal }));
     } else if (authStatus?.isAuthenticated) {
       fetchAndFill();
     }
-  }, [funds.length]);
+  }, [funds.length, authStatus?.isAuthenticated]);
 
-  const ec  = cfg.capital * cfg.leverage;
-  const rpt = (ec * cfg.riskPct) / 100;
-  const dll = rpt * cfg.maxSLPerDay;
-  const rwd = rpt * cfg.rrRatio;
+  // Use rrConfig DIRECTLY — no local copy — always in sync
+  const capital     = rrConfig.capital     || 50000;
+  const leverage    = rrConfig.leverage    || 5;
+  const riskPct     = rrConfig.riskPct     || 2;
+  const rrRatio     = rrConfig.rrRatio     || 2;
+  const maxSLPerDay = rrConfig.maxSLPerDay || 3;
+
+  const ec  = capital * leverage;
+  const rpt = (ec * riskPct) / 100;
+  const dll = rpt * maxSLPerDay;
+
+  const update = (field, val) => setRrConfig(p => ({ ...p, [field]: val }));
 
   const save = async () => {
-    setRrConfig(cfg);
-    try { await api.post('/api/risk/config', cfg); } catch(e) {}
+    try { await api.post('/api/risk/config', rrConfig); } catch(e) {}
   };
 
   return (
@@ -1384,10 +1401,10 @@ function RiskRewardView({ rrConfig, setRrConfig, selectedSymbols, ticks, authSta
       <div style={{ display:'grid',gridTemplateColumns:'400px 1fr',gap:18,alignItems:'start' }}>
         <div>
           <SCard title="Capital & Leverage" icon={Calculator}>
-            <Field label="Invested Capital (₹)" value={cfg.capital}
-              onChange={v=>setCfg(p=>({...p,capital:parseFloat(v)||0}))} prefix="₹" type="number" />
-            <SelectField label="Intraday Leverage" value={String(cfg.leverage)}
-              onChange={v=>setCfg(p=>({...p,leverage:parseInt(v)}))}
+            <Field label="Invested Capital (₹)" value={capital}
+              onChange={v=>update('capital',parseFloat(v)||0)} prefix="₹" type="number" />
+            <SelectField label="Intraday Leverage" value={String(leverage)}
+              onChange={v=>update('leverage',parseInt(v))}
               options={[1,2,3,4,5].map(v=>({value:String(v),label:`${v}x Leverage`}))}
               tooltip="MIS leverage multiplier from Fyers" />
             {/* Live balance indicator */}
@@ -1424,26 +1441,26 @@ function RiskRewardView({ rrConfig, setRrConfig, selectedSymbols, ticks, authSta
             <div style={{ marginBottom:13 }}>
               <div style={{ display:'flex',justifyContent:'space-between',marginBottom:5 }}>
                 <label style={{ fontSize:12,fontWeight:600,color:T2 }}>Risk % Per Trade</label>
-                <span className="mono" style={{ fontSize:13,fontWeight:700,color:R }}>{cfg.riskPct}%</span>
+                <span className="mono" style={{ fontSize:13,fontWeight:700,color:R }}>{riskPct}%</span>
               </div>
-              <input type="range" min="0.5" max="10" step="0.5" value={cfg.riskPct}
-                onChange={e=>setCfg(p=>({...p,riskPct:parseFloat(e.target.value)}))}
+              <input type="range" min="0.5" max="10" step="0.5" value={riskPct}
+                onChange={e=>update('riskPct',parseFloat(e.target.value))}
                 style={{ width:'100%',accentColor:SB }} />
               <div style={{ display:'flex',justifyContent:'space-between',fontSize:11,color:T2,marginTop:3 }}>
                 <span>0.5% (Safe)</span>
-                <span style={{ color:rpt>5000?R:T2 }}>Risk: {fmtINR(rpt)}</span>
+                <span style={{ color:rpt>5000?R:T2 }}>Risk/Trade: {fmtINR(rpt)}</span>
                 <span>10% (Aggressive)</span>
               </div>
             </div>
-            <SelectField label="Risk : Reward Ratio" value={String(cfg.rrRatio)}
-              onChange={v=>setCfg(p=>({...p,rrRatio:parseFloat(v)}))}
+            <SelectField label="Risk : Reward Ratio" value={String(rrRatio)}
+              onChange={v=>update('rrRatio',parseFloat(v))}
               options={[1,1.5,2,2.5,3,3.5,4].map(v=>({value:String(v),label:`1:${v}`}))}
               tooltip="For every ₹1 risked, target ₹R reward" />
           </SCard>
 
           <SCard title="Rule-Based Controls" icon={AlertTriangle}>
-            <Field label="Max SL Hits / Day" value={cfg.maxSLPerDay}
-              onChange={v=>setCfg(p=>({...p,maxSLPerDay:parseInt(v)||1}))} type="number"
+            <Field label="Max SL Hits / Day" value={maxSLPerDay}
+              onChange={v=>update('maxSLPerDay',parseInt(v)||1)} type="number"
               tooltip="Trading halts after this many SL hits (max 3 recommended)" />
             <div style={{ background:'#FFF7ED',border:`1px solid #FED7AA`,borderRadius:8,
               padding:'9px 12px',marginBottom:10,display:'flex',justifyContent:'space-between',alignItems:'center' }}>
@@ -1459,7 +1476,7 @@ function RiskRewardView({ rrConfig, setRrConfig, selectedSymbols, ticks, authSta
             width:'100%',padding:'11px',borderRadius:9,border:'none',background:SB,
             color:'#fff',fontWeight:700,fontSize:14,cursor:'pointer',
             display:'flex',alignItems:'center',justifyContent:'center',gap:8 }}>
-            <CheckCircle size={14} /> Save & Apply Config
+            <CheckCircle size={14} /> Save & Apply to Bot
           </button>
         </div>
 
