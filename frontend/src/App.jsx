@@ -695,17 +695,29 @@ function DashboardView({ masterOn, setMasterOn, selectedSymbols, ticks, orbLevel
         </div>
       </div>
 
-      {/* Stats */}
-      <div style={{ display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,marginBottom:18 }}>
-        <StatCard label="Effective Capital" value={fmtINR(riskStatus?.computed?.effectiveCapital||50000)}
-          sub="After Leverage" icon={Shield} color={SB} />
-        <StatCard label="Live P&L" value={(totalPnl>=0?'+':'')+fmtINR(totalPnl)}
-          sub={totalPnl>=0?'▲ Profitable':'▼ In loss'} icon={Activity} color={totalPnl>=0?G:R} />
-        <StatCard label="Active Trades" value={`${Object.keys(activeSignals).length}/10`}
-          sub={`${selectedSymbols.filter(s=>stockToggles[s]!==false).length} enabled`} icon={BarChart2} color="#8B5CF6" />
-        <StatCard label="Risk / Trade" value={fmtINR(riskStatus?.computed?.riskPerTrade||1000)}
-          sub={`Daily limit: ${fmtINR(riskStatus?.computed?.dailyLossLimit||3000)}`} icon={Target} color={W} />
-      </div>
+      {/* Stats — use rrConfig for capital (linked to broker balance) */}
+      {(()=>{
+        const cap = rrConfig?.capital || 50000;
+        const lev = rrConfig?.leverage || 5;
+        const rsk = rrConfig?.riskPct || 2;
+        const rr  = rrConfig?.rrRatio || 2;
+        const msl = rrConfig?.maxSLPerDay || 3;
+        const ec  = cap * lev;
+        const rpt = (ec * rsk) / 100;
+        const dll = rpt * msl;
+        return (
+          <div style={{ display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,marginBottom:18 }}>
+            <StatCard label="Effective Capital" value={fmtINR(ec)}
+              sub={`₹${cap.toLocaleString('en-IN')} × ${lev}x leverage`} icon={Shield} color={SB} />
+            <StatCard label="Live P&L" value={(totalPnl>=0?'+':'')+fmtINR(totalPnl)}
+              sub={totalPnl>=0?'▲ Profitable':'▼ In loss'} icon={Activity} color={totalPnl>=0?G:R} />
+            <StatCard label="Active Trades" value={`${Object.keys(activeSignals).length}/10`}
+              sub={`${selectedSymbols.filter(s=>stockToggles[s]!==false).length} enabled`} icon={BarChart2} color="#8B5CF6" />
+            <StatCard label="Risk / Trade" value={fmtINR(rpt)}
+              sub={`Daily limit: ${fmtINR(dll)}`} icon={Target} color={W} />
+          </div>
+        );
+      })()}
 
       {/* Risk halt warning */}
       {riskStatus?.daily?.tradingHalted && (
