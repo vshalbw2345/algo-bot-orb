@@ -1316,8 +1316,8 @@ function RiskRewardView({ rrConfig, setRrConfig, selectedSymbols, ticks, authSta
 
   const funds = globalFunds || [];
 
-  // Sync cfg when parent rrConfig changes
-  useEffect(()=>{ setCfg(rrConfig); }, [JSON.stringify(rrConfig)]);
+  // Sync cfg whenever parent rrConfig changes (including capital from balance)
+  useEffect(()=>{ setCfg(prev => ({ ...prev, ...rrConfig })); }, [rrConfig.capital, rrConfig.leverage, rrConfig.riskPct, rrConfig.rrRatio, rrConfig.maxSLPerDay]);
 
   // Fetch live balance and auto-fill capital from broker
   const fetchAndFill = async () => {
@@ -1339,20 +1339,19 @@ function RiskRewardView({ rrConfig, setRrConfig, selectedSymbols, ticks, authSta
     setBLoad(false);
   };
 
-  // Auto-fill on mount
+  // Auto-fill on mount — use global funds if available
   useEffect(() => {
     if (funds.length > 0) {
-      // Already have funds — just auto-fill capital
       const avail = funds.find(f =>
         (f.title||'').toLowerCase().includes('available') ||
         (f.title||'').toLowerCase().includes('free')
-      );
-      const val = avail ? (avail.equityAmount??avail.value??avail.currentValue??0) : 0;
-      if (val > 0) setCfg(p => ({ ...p, capital: Math.floor(val) }));
-    } else {
+      ) || funds[0];
+      const val = Math.floor(avail?.equityAmount??avail?.value??avail?.currentValue??0);
+      if (val > 0) setCfg(p => ({ ...p, capital: val }));
+    } else if (authStatus?.isAuthenticated) {
       fetchAndFill();
     }
-  }, []);
+  }, [funds.length]);
 
   const ec  = cfg.capital * cfg.leverage;
   const rpt = (ec * cfg.riskPct) / 100;
@@ -1624,28 +1623,48 @@ export default function App() {
   // Clock
   useEffect(()=>{ const t=setInterval(()=>setTime(new Date()),1000); return ()=>clearInterval(t); },[]);
 
+  // Helper: extract available balance from funds array
+  const extractBalance = (fundsArr) => {
+    if (!fundsArr?.length) return 0;
+    // Try to find available/free balance field
+    const avail = fundsArr.find(f =>
+      (f.title||'').toLowerCase().includes('available') ||
+      (f.title||'').toLowerCase().includes('free balance') ||
+      (f.title||'').toLowerCase().includes('cash avail') ||
+      f.id === 'free_balance' || f.id === 'available_balance'
+    ) || fundsArr[0]; // fallback to first entry
+    return Math.floor(avail?.equityAmount ?? avail?.value ?? avail?.currentValue ?? avail?.val ?? 0);
+  };
+
   // Pull initial state from server
   useEffect(()=>{
+    // 1. Get auth status
     api.get('/api/auth/status').then(r=>{
       setAuthStatus(r);
-      // Auto-fetch balance once authenticated
-      if(r.isAuthenticated) {
-        api.get('/api/portfolio/funds').then(fr=>{
-          if(fr.funds?.length>0) {
-            setFunds(fr.funds);
-            // Auto-fill capital in rrConfig from available balance
-            const avail = fr.funds.find(f=>
-              (f.title||'').toLowerCase().includes('available') ||
-              (f.title||'').toLowerCase().includes('free')
-            );
-            const val = avail ? (avail.equityAmount??avail.value??avail.currentValue??0) : 0;
-            if(val>0) setRrConfig(p=>({...p, capital:Math.floor(val)}));
-          }
-        }).catch(()=>{});
+    }).catch(()=>{});
+
+    // 2. Get risk/server config
+    api.get('/api/risk/status').then(r=>{
+      setRiskStatus(r);
+      // Only use server config if no balance fetched yet
+      if(r.config) setRrConfig(p => ({ ...p, ...r.config }));
+    }).catch(()=>{});
+  },[]);
+
+  // Separate effect: fetch balance whenever auth changes
+  useEffect(()=>{
+    if(!authStatus?.isAuthenticated) return;
+    api.get('/api/portfolio/funds').then(fr=>{
+      if(fr.funds?.length > 0) {
+        setFunds(fr.funds);
+        const bal = extractBalance(fr.funds);
+        if(bal > 0) {
+          // Balance overrides server config capital — this is the live broker balance
+          setRrConfig(p => ({ ...p, capital: bal }));
+        }
       }
     }).catch(()=>{});
-    api.get('/api/risk/status').then(r=>setRiskStatus(r)).catch(()=>{});
-  },[]);
+  },[authStatus?.isAuthenticated]);
 
   // Socket event listeners
   useEffect(()=>{
@@ -1655,7 +1674,12 @@ export default function App() {
       if(state.masterEnabled!==undefined) setMasterOn(state.masterEnabled);
       if(state.selectedSymbols)           setSelectedSymbols(state.selectedSymbols);
       if(state.stockToggles)              setStockToggles(state.stockToggles);
-      if(state.rrConfig)                  setRrConfig(state.rrConfig);
+      // Only update rrConfig from server if no live balance loaded yet
+      if(state.rrConfig) setRrConfig(p => {
+        // If capital was already set from broker balance (>0), keep it
+        // Otherwise use server config
+        return { ...state.rrConfig, capital: p.capital || state.rrConfig.capital };
+      });
       if(state.authStatus)                setAuthStatus(state.authStatus);
       if(state.riskStatus)                setRiskStatus(state.riskStatus);
       if(state.ticks)                     setTicks(state.ticks);
