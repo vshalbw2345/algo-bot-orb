@@ -135,9 +135,17 @@ function useSocket(url) {
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
-    const s = io(url, { transports: ['websocket'], reconnectionAttempts: 10 });
-    s.on('connect',    () => setConnected(true));
-    s.on('disconnect', () => setConnected(false));
+    const s = io(url, {
+      transports: ['polling', 'websocket'],  // polling first — works on Render
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 20000
+    });
+    s.on('connect',    () => { setConnected(true); });
+    s.on('disconnect', () => { setConnected(false); });
+    s.on('connect_error', () => { setConnected(false); });
     setSocket(s);
     return () => s.disconnect();
   }, [url]);
@@ -582,6 +590,7 @@ const NAV = [
   { id:'chart',     label:'Live Chart',        icon:Monitor },
   { id:'stocks',    label:'Stock Selection',   icon:List },
   { id:'test',      label:'Test Signal',       icon:Zap },
+  { id:'simulator', label:'ORB Simulator',     icon:Activity, badge:'SIM' },
   { id:'rr',        label:'Risk & Reward',     icon:Calculator },
   { id:'syntax',    label:'Syntax Generator',  icon:Code2 },
 ];
@@ -624,6 +633,10 @@ function Sidebar({ active, setActive, socketOk, authOk, masterOn }) {
               {item.id==='test' && (
                 <span style={{ marginLeft:'auto',fontSize:8,fontWeight:700,padding:'2px 5px',
                   borderRadius:3,background:'#8B5CF6',color:'#fff' }}>LIVE</span>
+              )}
+              {item.badge && item.id!=='test' && (
+                <span style={{ marginLeft:'auto',fontSize:8,fontWeight:700,padding:'2px 5px',
+                  borderRadius:3,background:G,color:'#fff' }}>{item.badge}</span>
               )}
               {item.id==='dashboard' && masterOn && (
                 <span style={{ marginLeft:'auto',width:6,height:6,borderRadius:'50%',background:G,flexShrink:0 }} className="live-dot" />
@@ -884,21 +897,17 @@ function LiveChartView({ selectedSymbols, ticks, orbLevels, activeSignals, authS
     if (!chartSym) return;
     setLoading(true);
     try {
-      // First try Fyers historical API
-      if (authStatus?.isAuthenticated) {
-        const days = ['D','W'].includes(tf) ? 365 : tf==='60' ? 30 : 10;
-        const r = await api.get(
-          `/api/stocks/history?symbol=${encodeURIComponent(chartSym)}&resolution=${tf}&days=${days}`
-        );
-        if (r.candles?.length > 0) {
-          setCandles(r.candles);
-          setLoading(false);
-          return;
-        }
+      const days = ['D','W'].includes(tf) ? 365 : tf==='60' ? 60 : 15;
+      const r = await api.get(
+        `/api/stocks/history?symbol=${encodeURIComponent(chartSym)}&resolution=${tf}&days=${days}`
+      );
+      if (r.success && r.candles?.length > 0) {
+        setCandles(r.candles);
+        setLoading(false);
+        return;
       }
-      // Fallback: intraday candles from orbEngine
-      const r2 = await api.get(`/api/stocks/candles/${encodeURIComponent(chartSym)}?tf=5M`);
-      setCandles(r2.candles || []);
+      // If history fails (auth expired etc), show message
+      setCandles([]);
     } catch(e) {
       setCandles([]);
     }
@@ -906,6 +915,11 @@ function LiveChartView({ selectedSymbols, ticks, orbLevels, activeSignals, authS
   };
 
   useEffect(()=>{ loadChart(); },[chartSym, tf]);
+
+  // Auto reload chart when auth becomes available
+  useEffect(()=>{
+    if(authStatus?.isAuthenticated) loadChart();
+  },[authStatus?.isAuthenticated]);
 
   // Live price ticker — update every second from ticks or REST quote
   useEffect(()=>{
@@ -1487,6 +1501,205 @@ function RiskRewardView({ rrConfig, setRrConfig, selectedSymbols, ticks, authSta
   );
 }
 
+// ── ORB Simulator View ───────────────────────────────────
+// Test entry/exit logic WITHOUT real market hours or broker
+function ORBSimulatorView({ rrConfig, alerts, setAlerts }) {
+  const [sym,       setSym]       = useState('NSE:RELIANCE-EQ');
+  const [orbHigh,   setOrbHigh]   = useState('');
+  const [orbLow,    setOrbLow]    = useState('');
+  const [direction, setDirection] = useState('BUY');
+  const [ltp,       setLtp]       = useState('');
+  const [log,       setLog]       = useState([]);
+  const [trade,     setTrade]     = useState(null);
+
+  const addLog = (msg, color=T1) => {
+    setLog(p => [{ msg, color, ts: new Date().toLocaleTimeString('en-IN') }, ...p].slice(0,50));
+  };
+
+  const ec      = (rrConfig?.capital||50000) * (rrConfig?.leverage||5);
+  const riskAmt = ec * (rrConfig?.riskPct||2) / 100;
+
+  // ── Simulate ORB lock ──────────────────────────────────
+  const lockORB = () => {
+    const h = parseFloat(orbHigh), l = parseFloat(orbLow);
+    if (!h || !l || h <= l) { addLog('❌ Invalid ORB levels', R); return; }
+    addLog(`🔒 ORB LOCKED → High: ₹${h} | Low: ₹${l}`, SB);
+  };
+
+  // ── Simulate breakout signal ───────────────────────────
+  const fireSignal = () => {
+    const h = parseFloat(orbHigh), l = parseFloat(orbLow);
+    const entry = parseFloat(ltp) || (direction==='BUY' ? h+1 : l-1);
+    if (!h || !l) { addLog('❌ Lock ORB levels first', R); return; }
+
+    const sl     = direction==='BUY' ? l : h;
+    const slPts  = Math.abs(entry - sl);
+    const target = direction==='BUY' ? entry + slPts*(rrConfig?.rrRatio||2) : entry - slPts*(rrConfig?.rrRatio||2);
+    const qty    = Math.max(1, Math.floor(riskAmt / slPts));
+
+    const t = { sym, direction, entry, sl, target, qty, slPts, trailed: false };
+    setTrade(t);
+
+    addLog(`🚀 ${direction} SIGNAL → Entry:₹${entry.toFixed(2)} SL:₹${sl.toFixed(2)} Tgt:₹${target.toFixed(2)} Qty:${qty}`, direction==='BUY'?G:R);
+    addLog(`   Risk: ₹${(slPts*qty).toFixed(2)} | Reward: ₹${(slPts*qty*(rrConfig?.rrRatio||2)).toFixed(2)}`, T2);
+
+    // Add to global alert feed
+    setAlerts(p => [{
+      type: direction, symbol: sym,
+      msg: `[SIM] ${direction} Entry:₹${entry.toFixed(2)} SL:₹${sl.toFixed(2)} Tgt:₹${target.toFixed(2)} Qty:${qty}`,
+      status: 'SIMULATED', ts: new Date().toISOString(), id: 'SIM_'+Date.now()
+    }, ...p]);
+  };
+
+  // ── Simulate price movement ────────────────────────────
+  const simulatePrice = (price) => {
+    if (!trade) { addLog('❌ Fire a signal first', R); return; }
+    const p = parseFloat(price);
+    if (!p) return;
+    const { direction: dir, entry, sl, target, qty, trailed } = trade;
+
+    // Check trail
+    const halfTgt = dir==='BUY' ? entry+(target-entry)*0.5 : entry-(entry-target)*0.5;
+    if (!trailed && ((dir==='BUY' && p>=halfTgt) || (dir==='SELL' && p<=halfTgt))) {
+      setTrade(prev => ({ ...prev, sl: entry, trailed: true }));
+      addLog(`📌 SL TRAILED to entry ₹${entry.toFixed(2)} at price ₹${p.toFixed(2)}`, W);
+    }
+
+    // Check SL
+    const curSL = trade.trailed ? entry : sl;
+    if ((dir==='BUY' && p<=curSL) || (dir==='SELL' && p>=curSL)) {
+      const pnl = dir==='BUY' ? (curSL-entry)*qty : (entry-curSL)*qty;
+      addLog(`🛑 SL HIT at ₹${curSL.toFixed(2)} | PnL: ₹${pnl.toFixed(2)}`, R);
+      setTrade(null);
+      setAlerts(prev => [{ type:'SL_HIT', symbol:trade.sym,
+        msg:`[SIM] SL Hit ₹${curSL.toFixed(2)} | PnL ₹${pnl.toFixed(2)}`,
+        status:'SL_HIT', ts:new Date().toISOString(), id:'SIM_'+Date.now() }, ...prev]);
+      return;
+    }
+
+    // Check Target
+    if ((dir==='BUY' && p>=target) || (dir==='SELL' && p<=target)) {
+      const pnl = dir==='BUY' ? (target-entry)*qty : (entry-target)*qty;
+      addLog(`🎯 TARGET HIT at ₹${target.toFixed(2)} | PnL: +₹${pnl.toFixed(2)}`, G);
+      setTrade(null);
+      setAlerts(prev => [{ type:'TARGET_HIT', symbol:trade.sym,
+        msg:`[SIM] Target Hit ₹${target.toFixed(2)} | PnL +₹${pnl.toFixed(2)}`,
+        status:'TARGET_HIT', ts:new Date().toISOString(), id:'SIM_'+Date.now() }, ...prev]);
+      return;
+    }
+
+    const unreal = dir==='BUY' ? (p-entry)*qty : (entry-p)*qty;
+    addLog(`📊 Price: ₹${p.toFixed(2)} | Unrealised: ${unreal>=0?'+':''}₹${unreal.toFixed(2)}`, unreal>=0?G:R);
+  };
+
+  const [simPrice, setSimPrice] = useState('');
+
+  return (
+    <div style={{ padding:'22px', height:'100%', overflowY:'auto' }}>
+      <h2 style={{ fontSize:19,fontWeight:800,color:SB,marginBottom:4 }}>ORB Strategy Simulator</h2>
+      <p style={{ fontSize:13,color:T2,marginBottom:16 }}>
+        Test entry/exit logic without real market. Simulates ORB breakout, SL trail, and P&L.
+        Results appear in Dashboard Alert Feed.
+      </p>
+
+      <div style={{ display:'grid',gridTemplateColumns:'360px 1fr',gap:18,alignItems:'start' }}>
+        {/* Controls */}
+        <div>
+          <SCard title="Step 1 — Set ORB Levels" icon={Target}>
+            <div style={{ marginBottom:10 }}>
+              <label style={{ fontSize:12,fontWeight:600,color:T2,display:'block',marginBottom:5 }}>Stock</label>
+              <StockDropdown value={sym} onChange={setSym} />
+            </div>
+            <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:8 }}>
+              <Field label="ORB High ₹" value={orbHigh} onChange={setOrbHigh} type="number" prefix="₹" />
+              <Field label="ORB Low ₹"  value={orbLow}  onChange={setOrbLow}  type="number" prefix="₹" />
+            </div>
+            <button onClick={lockORB} style={{ width:'100%',padding:'9px',borderRadius:8,
+              border:`2px solid ${SB}`,background:'#EEF2FF',color:SB,fontWeight:700,fontSize:13,cursor:'pointer' }}>
+              🔒 Lock ORB Levels
+            </button>
+          </SCard>
+
+          <SCard title="Step 2 — Fire Breakout Signal" icon={Zap}>
+            <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:7,marginBottom:10 }}>
+              {['BUY','SELL'].map(s=>(
+                <button key={s} onClick={()=>setDirection(s)} style={{
+                  padding:'9px',borderRadius:8,fontWeight:700,
+                  border:`2px solid ${s==='BUY'?G:R}`,
+                  background:direction===s?(s==='BUY'?G:R):'#fff',
+                  color:direction===s?'#fff':(s==='BUY'?G:R),cursor:'pointer' }}>
+                  {s==='BUY'?'▲ BUY':'▼ SELL'}
+                </button>
+              ))}
+            </div>
+            <Field label="Entry Price (optional)" value={ltp} onChange={setLtp} type="number" prefix="₹"
+              placeholder={direction==='BUY'?`Above ${orbHigh||'ORB High'}`:`Below ${orbLow||'ORB Low'}`} />
+            <button onClick={fireSignal} style={{ width:'100%',padding:'9px',borderRadius:8,border:'none',
+              background:direction==='BUY'?G:R,color:'#fff',fontWeight:700,fontSize:13,cursor:'pointer' }}>
+              🚀 Fire {direction} Signal
+            </button>
+          </SCard>
+
+          {trade && (
+            <SCard title="Step 3 — Simulate Price Movement" icon={Activity}>
+              <div style={{ background:'#F8FAFC',borderRadius:8,padding:'10px 12px',marginBottom:10 }}>
+                <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6 }}>
+                  {[{l:'Entry',v:trade.entry,c:'#6366F1'},{l:'SL',v:trade.trailed?trade.entry:trade.sl,c:R},{l:'Target',v:trade.target,c:G}].map(x=>(
+                    <div key={x.l} style={{ background:x.c+'12',borderRadius:6,padding:'5px 8px',textAlign:'center' }}>
+                      <div style={{ fontSize:9,color:x.c,fontWeight:600 }}>{x.l}{x.l==='SL'&&trade.trailed?' ✓':''}</div>
+                      <div className="mono" style={{ fontSize:13,fontWeight:700,color:x.c }}>₹{x.v.toFixed(2)}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <Field label="Simulate Current Price ₹" value={simPrice} onChange={setSimPrice} type="number" prefix="₹"
+                placeholder="Enter any price to check SL/Target/Trail" />
+              <button onClick={()=>simulatePrice(simPrice)} style={{ width:'100%',padding:'9px',borderRadius:8,
+                border:'none',background:SB,color:'#fff',fontWeight:700,fontSize:13,cursor:'pointer' }}>
+                ▶ Check Price Action
+              </button>
+              <button onClick={()=>{setTrade(null);addLog('❌ Trade manually exited',R);}} style={{ width:'100%',
+                padding:'7px',borderRadius:8,border:`1px solid ${R}`,background:'#fff',
+                color:R,fontWeight:600,fontSize:12,cursor:'pointer',marginTop:6 }}>
+                Exit Trade
+              </button>
+            </SCard>
+          )}
+
+          {/* Config summary */}
+          <div style={{ background:'#EEF2FF',borderRadius:9,padding:'10px 14px',fontSize:12 }}>
+            <div style={{ fontWeight:700,color:SB,marginBottom:5 }}>Config from R&R Settings</div>
+            <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:4,color:T2 }}>
+              <span>Capital: <b style={{color:T1}}>{fmtINR(rrConfig?.capital||50000)}</b></span>
+              <span>Leverage: <b style={{color:T1}}>{rrConfig?.leverage||5}x</b></span>
+              <span>Risk/trade: <b style={{color:R}}>{fmtINR(riskAmt)}</b></span>
+              <span>R:R Ratio: <b style={{color:G}}>1:{rrConfig?.rrRatio||2}</b></span>
+            </div>
+          </div>
+        </div>
+
+        {/* Simulation Log */}
+        <SCard title="Simulation Log" icon={Bell}
+          action={<button onClick={()=>setLog([])} style={{ fontSize:11,color:R,background:'none',
+            border:`1px solid ${R}`,borderRadius:5,padding:'2px 8px',cursor:'pointer' }}>Clear</button>}>
+          {log.length===0
+            ? <div style={{ textAlign:'center',color:T2,padding:'32px 0',fontSize:13 }}>
+                Lock ORB levels and fire a signal to start simulation
+              </div>
+            : log.map((l,i)=>(
+              <div key={i} style={{ display:'flex',gap:10,padding:'6px 8px',borderRadius:6,
+                marginBottom:4,background:'#F8FAFC',borderLeft:`3px solid ${l.color||T1}` }}>
+                <span className="mono" style={{ fontSize:10,color:T2,flexShrink:0 }}>{l.ts}</span>
+                <span style={{ fontSize:12,color:l.color||T1,fontWeight:500 }}>{l.msg}</span>
+              </div>
+            ))
+          }
+        </SCard>
+      </div>
+    </div>
+  );
+}
+
 // ── Syntax Generator View ─────────────────────────────────
 function SyntaxGenView({ selectedSymbols }) {
   const [sym,  setSym]  = useState(selectedSymbols[0]||'NSE:RELIANCE-EQ');
@@ -1623,47 +1836,70 @@ export default function App() {
   // Clock
   useEffect(()=>{ const t=setInterval(()=>setTime(new Date()),1000); return ()=>clearInterval(t); },[]);
 
-  // Helper: extract available balance from funds array
-  const extractBalance = (fundsArr) => {
-    if (!fundsArr?.length) return 0;
-    // Try to find available/free balance field
-    const avail = fundsArr.find(f =>
-      (f.title||'').toLowerCase().includes('available') ||
-      (f.title||'').toLowerCase().includes('free balance') ||
-      (f.title||'').toLowerCase().includes('cash avail') ||
-      f.id === 'free_balance' || f.id === 'available_balance'
-    ) || fundsArr[0]; // fallback to first entry
-    return Math.floor(avail?.equityAmount ?? avail?.value ?? avail?.currentValue ?? avail?.val ?? 0);
+  // ── Extract available balance from Fyers funds array ────
+  const extractBalance = (arr) => {
+    if (!arr?.length) return 0;
+    // Fyers returns fund_limit array with equityAmount field
+    // Try common field names
+    for (const f of arr) {
+      const v = f.equityAmount ?? f.value ?? f.currentValue ?? f.val ?? 0;
+      const t = (f.title || f.id || '').toLowerCase();
+      if (t.includes('available') || t.includes('free') || t.includes('cash')) {
+        const n = parseFloat(v);
+        if (n > 0) return Math.floor(n);
+      }
+    }
+    // Fallback: use first positive value
+    for (const f of arr) {
+      const v = parseFloat(f.equityAmount ?? f.value ?? f.currentValue ?? f.val ?? 0);
+      if (v > 0) return Math.floor(v);
+    }
+    return 0;
   };
 
-  // Pull initial state from server
-  useEffect(()=>{
-    // 1. Get auth status
-    api.get('/api/auth/status').then(r=>{
-      setAuthStatus(r);
-    }).catch(()=>{});
-
-    // 2. Get risk/server config
-    api.get('/api/risk/status').then(r=>{
-      setRiskStatus(r);
-      // Only use server config if no balance fetched yet
-      if(r.config) setRrConfig(p => ({ ...p, ...r.config }));
-    }).catch(()=>{});
-  },[]);
-
-  // Separate effect: fetch balance whenever auth changes
-  useEffect(()=>{
-    if(!authStatus?.isAuthenticated) return;
-    api.get('/api/portfolio/funds').then(fr=>{
-      if(fr.funds?.length > 0) {
+  // ── Load balance and update capital ─────────────────────
+  const loadBalance = useCallback(async () => {
+    try {
+      const fr = await api.get('/api/portfolio/funds');
+      if (fr.success && fr.funds?.length > 0) {
         setFunds(fr.funds);
         const bal = extractBalance(fr.funds);
-        if(bal > 0) {
-          // Balance overrides server config capital — this is the live broker balance
-          setRrConfig(p => ({ ...p, capital: bal }));
-        }
+        if (bal > 0) setRrConfig(p => ({ ...p, capital: bal }));
+        return bal;
       }
+    } catch(_) {}
+    return 0;
+  }, []);
+
+  // ── Initial load ─────────────────────────────────────────
+  useEffect(()=>{
+    // Auth status
+    api.get('/api/auth/status').then(r=>{
+      setAuthStatus(r);
+      if (r.isAuthenticated) loadBalance();
     }).catch(()=>{});
+
+    // Risk config
+    api.get('/api/risk/status').then(r=>{
+      setRiskStatus(r);
+      if (r.config) setRrConfig(p => ({ ...p, ...r.config }));
+    }).catch(()=>{});
+
+    // Alert polling fallback — fetch alerts every 5s via REST
+    // This ensures alerts show even if Socket.io drops
+    const alertPoll = setInterval(async () => {
+      try {
+        const r = await api.get('/api/alerts');
+        if (r.alerts?.length > 0) setAlerts(r.alerts);
+      } catch(_) {}
+    }, 5000);
+
+    return () => clearInterval(alertPoll);
+  },[]);
+
+  // ── Re-fetch balance when auth changes ───────────────────
+  useEffect(()=>{
+    if (authStatus?.isAuthenticated) loadBalance();
   },[authStatus?.isAuthenticated]);
 
   // Socket event listeners
@@ -1674,16 +1910,21 @@ export default function App() {
       if(state.masterEnabled!==undefined) setMasterOn(state.masterEnabled);
       if(state.selectedSymbols)           setSelectedSymbols(state.selectedSymbols);
       if(state.stockToggles)              setStockToggles(state.stockToggles);
-      // Only update rrConfig from server if no live balance loaded yet
-      if(state.rrConfig) setRrConfig(p => {
-        // If capital was already set from broker balance (>0), keep it
-        // Otherwise use server config
-        return { ...state.rrConfig, capital: p.capital || state.rrConfig.capital };
-      });
-      if(state.authStatus)                setAuthStatus(state.authStatus);
+      // Merge rrConfig but NEVER overwrite capital — it comes from broker balance
+      if(state.rrConfig) setRrConfig(p => ({
+        leverage:    state.rrConfig.leverage    || p.leverage,
+        riskPct:     state.rrConfig.riskPct     || p.riskPct,
+        rrRatio:     state.rrConfig.rrRatio     || p.rrRatio,
+        maxSLPerDay: state.rrConfig.maxSLPerDay || p.maxSLPerDay,
+        capital:     p.capital  // always keep current capital — don't overwrite
+      }));
+      if(state.authStatus) {
+        setAuthStatus(state.authStatus);
+        if(state.authStatus.isAuthenticated) loadBalance();
+      }
       if(state.riskStatus)                setRiskStatus(state.riskStatus);
       if(state.ticks)                     setTicks(state.ticks);
-      if(state.alerts)                    setAlerts(state.alerts);
+      if(state.alerts?.length>0)          setAlerts(state.alerts);
     });
 
     socket.on('tick', ({ symbol, tick }) => {
@@ -1695,7 +1936,22 @@ export default function App() {
     });
 
     socket.on('signal', (sig) => {
-      setAlerts(p => [sig, ...p].slice(0,100));
+      setAlerts(p => {
+        const exists = p.find(a => a.id === sig.id);
+        return exists ? p : [sig, ...p].slice(0,200);
+      });
+    });
+
+    socket.on('testSignalResult', (sig) => {
+      const alert = {
+        type:    sig.order?.side || 'TEST',
+        symbol:  sig.order?.symbol || sig.symbol || '—',
+        msg:     `Test signal: ${sig.order?.side} ${sig.order?.qty} ${sig.order?.symbol} [${sig.orderId}]`,
+        status:  'SIMULATED',
+        ts:      new Date().toISOString(),
+        id:      sig.orderId
+      };
+      setAlerts(p => [alert, ...p].slice(0,200));
     });
 
     socket.on('orderExecuted', ({ signal }) => {
@@ -1843,6 +2099,9 @@ export default function App() {
             <RiskRewardView rrConfig={rrConfig} setRrConfig={setRrConfig}
               selectedSymbols={selectedSymbols} ticks={ticks} authStatus={authStatus}
               funds={funds} setFunds={setFunds} />
+          )}
+          {activeView==='simulator' && (
+            <ORBSimulatorView rrConfig={rrConfig} alerts={alerts} setAlerts={setAlerts} />
           )}
           {activeView==='syntax' && <SyntaxGenView selectedSymbols={selectedSymbols} />}
         </div>
