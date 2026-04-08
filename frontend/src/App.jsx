@@ -49,6 +49,10 @@ function GlobalStyles() {
       .tip::after{content:'';position:absolute;top:100%;left:50%;transform:translateX(-50%);
         border:5px solid transparent;border-top-color:#1E293B}
       @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+      .trade-blink{animation:tradeBlink 1s infinite}
+      @keyframes tradeBlink{0%,100%{box-shadow:0 0 0 0 rgba(16,185,129,.6)}50%{box-shadow:0 0 0 8px rgba(16,185,129,0)}}
+      .sell-blink{animation:sellBlink 1s infinite}
+      @keyframes sellBlink{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,.6)}50%{box-shadow:0 0 0 8px rgba(239,68,68,0)}}
     `}</style>
   );
 }
@@ -247,15 +251,16 @@ function SelectField({ label, value, onChange, options, tooltip }) {
 // ─────────────────────────────────────────────────────────
 // STOCK DROPDOWN (searchable)
 // ─────────────────────────────────────────────────────────
-function StockDropdown({ value, onChange, placeholder }) {
+function StockDropdown({ value, onChange, placeholder, stockList }) {
   const [open, setOpen]   = useState(false);
   const [q, setQ]         = useState('');
   const ref               = useRef(null);
 
-  const filtered = INDIAN_STOCKS.filter(s =>
+  const sourceList = stockList || INDIAN_STOCKS;
+  const filtered = sourceList.filter(s =>
     shortSym(s.symbol).includes(q.toUpperCase()) ||
     s.name.toLowerCase().includes(q.toLowerCase())
-  ).slice(0, 50);
+  ).slice(0, 100);
 
   useEffect(() => {
     const fn = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
@@ -263,7 +268,7 @@ function StockDropdown({ value, onChange, placeholder }) {
     return () => document.removeEventListener('mousedown', fn);
   }, []);
 
-  const sel = value ? INDIAN_STOCKS.find(s => s.symbol === value) : null;
+  const sel = value ? sourceList.find(s => s.symbol === value) || INDIAN_STOCKS.find(s => s.symbol === value) : null;
   return (
     <div ref={ref} style={{ position:'relative' }}>
       <div onClick={() => setOpen(o=>!o)} style={{ display:'flex',alignItems:'center',
@@ -323,15 +328,25 @@ function StockDropdown({ value, onChange, placeholder }) {
 // ─────────────────────────────────────────────────────────
 function LiveCandleChart({ candles, orbHigh, orbLow, tradeInfo, symbol }) {
   const canvasRef = useRef(null);
+  const rafRef    = useRef(null);
+  const dataRef   = useRef({ candles, orbHigh, orbLow, tradeInfo });
 
-  useEffect(() => {
+  // Keep ref in sync without re-running draw
+  useEffect(() => { dataRef.current = { candles, orbHigh, orbLow, tradeInfo }; }, [candles, orbHigh, orbLow, tradeInfo]);
+
+  const draw = useCallback(() => {
+    const { candles, orbHigh, orbLow, tradeInfo } = dataRef.current;
     if (!candles?.length || !canvasRef.current) return;
     const canvas = canvasRef.current;
     const dpr = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
-    canvas.width  = rect.width  * dpr;
-    canvas.height = rect.height * dpr;
+    if (!rect.width) return;
+    if (canvas.width !== rect.width * dpr) {
+      canvas.width  = rect.width  * dpr;
+      canvas.height = rect.height * dpr;
+    }
     const ctx = canvas.getContext('2d');
+    ctx.save();
     ctx.scale(dpr, dpr);
     const W = rect.width, H = rect.height;
     const pad = { top:36, right:82, bottom:52, left:8 };
@@ -412,7 +427,18 @@ function LiveCandleChart({ candles, orbHigh, orbLow, tradeInfo, symbol }) {
     });
     ctx.strokeStyle=BD; ctx.lineWidth=1; ctx.setLineDash([]);
     ctx.strokeRect(pad.left,pad.top,cW,cH);
-  }, [candles, orbHigh, orbLow, tradeInfo]);
+    ctx.restore();
+  }, []);
+
+  // Start RAF loop
+  useEffect(() => {
+    const loop = () => {
+      draw();
+      rafRef.current = requestAnimationFrame(loop);
+    };
+    rafRef.current = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [draw]);
 
   return <canvas ref={canvasRef} style={{ width:'100%',height:'100%',display:'block' }} />;
 }
@@ -420,7 +446,7 @@ function LiveCandleChart({ candles, orbHigh, orbLow, tradeInfo, symbol }) {
 // ─────────────────────────────────────────────────────────
 // STOCK CARD (Dashboard)
 // ─────────────────────────────────────────────────────────
-function StockCard({ symbol, tick, orb, signal, toggleOn, onToggle, masterOn }) {
+function StockCard({ symbol, tick, orb, signal, toggleOn, onToggle, masterOn, rrCfg }) {
   const si    = INDIAN_STOCKS.find(s => s.symbol === symbol);
   const ltp   = tick?.ltp || si?.price || 0;
   const chg   = tick?.chg || 0;
@@ -430,11 +456,20 @@ function StockCard({ symbol, tick, orb, signal, toggleOn, onToggle, masterOn }) 
     signal.direction === 'BUY' ? (ltp - signal.entry)*signal.qty : (signal.entry - ltp)*signal.qty
   ) : 0;
   const isActive = toggleOn && masterOn;
+  const tradeActive = !!signal;
+
+  // Calculate qty from effective capital
+  const ec = (rrCfg?.capital||50000) * (rrCfg?.leverage||5);
+  const riskAmt = ec * (rrCfg?.riskPct||2) / 100;
+  const slPts = orb?.locked ? Math.abs((orb.high - orb.low)) : ltp * 0.02;
+  const calcQty = slPts > 0 ? Math.max(1, Math.floor(riskAmt / slPts)) : 1;
 
   return (
-    <div style={{ background:'#fff',border:`1.5px solid ${isActive?SB+'40':BD}`,
-      borderRadius:12,padding:'13px 14px',position:'relative',transition:'all .2s',
-      boxShadow:isActive?'0 2px 12px rgba(30,64,175,.07)':'none' }}>
+    <div className={tradeActive ? (signal.direction==='BUY'?'trade-blink':'sell-blink') : ''}
+      style={{ background:'#fff',
+        border:`1.5px solid ${tradeActive?(signal.direction==='BUY'?G:R):isActive?SB+'40':BD}`,
+        borderRadius:12,padding:'13px 14px',position:'relative',transition:'all .2s',
+        boxShadow:isActive?'0 2px 12px rgba(30,64,175,.07)':'none' }}>
       {/* Header */}
       <div style={{ display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8 }}>
         <div>
@@ -491,6 +526,14 @@ function StockCard({ symbol, tick, orb, signal, toggleOn, onToggle, masterOn }) 
           ))}
         </div>
       )}
+
+      {/* Qty display */}
+      <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',
+        marginTop:6,paddingTop:5,borderTop:`1px solid ${BD}` }}>
+        <span style={{ fontSize:9,color:T2 }}>CALC QTY</span>
+        <span className="mono" style={{ fontSize:11,fontWeight:700,color:SB }}>{signal?.qty||calcQty} shares</span>
+        <span style={{ fontSize:9,color:T2 }}>EC: {fmtINR(ec)}</span>
+      </div>
 
       {!isActive && (
         <div style={{ position:'absolute',inset:0,borderRadius:12,background:'rgba(255,255,255,.55)',
@@ -691,7 +734,8 @@ function DashboardView({ masterOn, setMasterOn, selectedSymbols, ticks, orbLevel
             return sym ? (
               <StockCard key={sym} symbol={sym} tick={ticks[sym]} orb={orbLevels[sym]}
                 signal={activeSignals[sym]} toggleOn={stockToggles[sym]!==false}
-                onToggle={()=>onToggleStock(sym, stockToggles[sym]===false)} masterOn={masterOn} />
+                onToggle={()=>onToggleStock(sym, stockToggles[sym]===false)} masterOn={masterOn}
+                rrCfg={riskStatus?.config} />
             ) : (
               <div key={i} style={{ border:`2px dashed ${BD}`,borderRadius:12,padding:18,
                 display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
@@ -823,19 +867,76 @@ function ApiCredView({ authStatus }) {
 }
 
 // ── Live Chart View ───────────────────────────────────────
-function LiveChartView({ selectedSymbols, ticks, orbLevels, activeSignals }) {
-  const [chartSym, setChartSym] = useState(selectedSymbols[0] || 'NSE:RELIANCE-EQ');
-  const [tf, setTf]             = useState('5M');
-  const [candles, setCandles]   = useState([]);
-  const [loading, setLoading]   = useState(false);
+function LiveChartView({ selectedSymbols, ticks, orbLevels, activeSignals, authStatus }) {
+  const [chartSym,    setChartSym]    = useState(selectedSymbols[0] || 'NSE:RELIANCE-EQ');
+  const [tf,          setTf]          = useState('5');
+  const [candles,     setCandles]     = useState([]);
+  const [loading,     setLoading]     = useState(false);
+  const [livePrice,   setLivePrice]   = useState(null);
 
-  useEffect(()=>{
-    if(!chartSym) return;
+  // Map timeframe label to Fyers resolution
+  const TF_MAP = { '1':'1','3':'3','5':'5','15':'15','30':'30','60':'60','D':'D','W':'W' };
+  const TF_LABELS = [
+    {k:'1',l:'1M'},{k:'3',l:'3M'},{k:'5',l:'5M'},{k:'15',l:'15M'},
+    {k:'30',l:'30M'},{k:'60',l:'1H'},{k:'D',l:'1D'},{k:'W',l:'1W'}
+  ];
+
+  // Fetch history from Fyers API
+  const loadChart = async () => {
+    if (!chartSym) return;
     setLoading(true);
-    api.get(`/api/stocks/candles/${encodeURIComponent(chartSym)}?tf=${tf}`)
-      .then(r=>{ setCandles(r.candles||[]); setLoading(false); })
-      .catch(()=>{ setCandles([]); setLoading(false); });
-  },[chartSym,tf]);
+    try {
+      // First try Fyers historical API
+      if (authStatus?.isAuthenticated) {
+        const days = ['D','W'].includes(tf) ? 365 : tf==='60' ? 30 : 10;
+        const r = await api.get(
+          `/api/stocks/history?symbol=${encodeURIComponent(chartSym)}&resolution=${tf}&days=${days}`
+        );
+        if (r.candles?.length > 0) {
+          setCandles(r.candles);
+          setLoading(false);
+          return;
+        }
+      }
+      // Fallback: intraday candles from orbEngine
+      const r2 = await api.get(`/api/stocks/candles/${encodeURIComponent(chartSym)}?tf=5M`);
+      setCandles(r2.candles || []);
+    } catch(e) {
+      setCandles([]);
+    }
+    setLoading(false);
+  };
+
+  useEffect(()=>{ loadChart(); },[chartSym, tf]);
+
+  // Live price ticker — update every second from ticks or REST quote
+  useEffect(()=>{
+    const tick = ticks[chartSym];
+    if (tick?.ltp) { setLivePrice(tick); return; }
+    // Poll REST quote every 3s when market open
+    const t = setInterval(async () => {
+      try {
+        const r = await api.get(`/api/stocks/quote/${encodeURIComponent(chartSym)}`);
+        if (r.quote?.ltp) setLivePrice(r.quote);
+      } catch(_) {}
+    }, 3000);
+    return () => clearInterval(t);
+  }, [chartSym, ticks]);
+
+  // Update last candle with live tick
+  useEffect(()=>{
+    const tick = ticks[chartSym];
+    if (!tick?.ltp || candles.length === 0) return;
+    setCandles(prev => {
+      const updated = [...prev];
+      const last = { ...updated[updated.length-1] };
+      last.close  = tick.ltp;
+      last.high   = Math.max(last.high, tick.ltp);
+      last.low    = Math.min(last.low, tick.ltp);
+      updated[updated.length-1] = last;
+      return updated;
+    });
+  }, [ticks[chartSym]?.ltp]);
 
   const orb    = orbLevels[chartSym] || null;
   const signal = activeSignals[chartSym] || null;
@@ -855,22 +956,24 @@ function LiveChartView({ selectedSymbols, ticks, orbLevels, activeSignals }) {
               <option key={sym} value={sym}>{shortSym(sym)} — {INDIAN_STOCKS.find(s=>s.symbol===sym)?.name?.slice(0,28)}</option>
             ))}
         </select>
-        <div style={{ display:'flex',gap:3 }}>
-          {['5M','15M','30M','1H','1D','1W'].map(t=>(
-            <button key={t} onClick={()=>setTf(t)} style={{
-              padding:'6px 10px',borderRadius:6,border:`1.5px solid ${t===tf?SB:BD}`,
-              background:t===tf?SB:'#fff',color:t===tf?'#fff':T2,
-              fontSize:11,fontWeight:600,cursor:'pointer',transition:'.15s' }}>{t}</button>
+        <div style={{ display:'flex',gap:3,flexWrap:'wrap' }}>
+          {TF_LABELS.map(({k,l})=>(
+            <button key={k} onClick={()=>setTf(k)} style={{
+              padding:'6px 10px',borderRadius:6,border:`1.5px solid ${k===tf?SB:BD}`,
+              background:k===tf?SB:'#fff',color:k===tf?'#fff':T2,
+              fontSize:11,fontWeight:600,cursor:'pointer',transition:'.15s' }}>{l}</button>
           ))}
         </div>
         <div style={{ marginLeft:'auto',display:'flex',alignItems:'center',gap:8 }}>
           <div style={{ width:7,height:7,borderRadius:'50%',background:G }} className="live-dot" />
           <span className="mono" style={{ fontSize:14,fontWeight:700,color:T1 }}>
-            ₹{(tick?.ltp||INDIAN_STOCKS.find(s=>s.symbol===chartSym)?.price||0).toFixed(2)}
+            ₹{(livePrice?.ltp||ticks[chartSym]?.ltp||INDIAN_STOCKS.find(s=>s.symbol===chartSym)?.price||0).toFixed(2)}
           </span>
-          <span className="mono" style={{ fontSize:12,color:tick?.chg>=0?G:R }}>
-            {tick?.chg>=0?'+':''}{(tick?.chg||0).toFixed(2)}
+          <span className="mono" style={{ fontSize:12,color:(livePrice?.chg||0)>=0?G:R }}>
+            {(livePrice?.chg||0)>=0?'+':''}{(livePrice?.chg||0).toFixed(2)}
           </span>
+          <button onClick={loadChart} style={{ padding:'4px 8px',borderRadius:5,border:`1px solid ${BD}`,
+            background:'#fff',fontSize:11,cursor:'pointer',color:T2 }}>↺ Reload</button>
         </div>
       </div>
 
@@ -916,11 +1019,34 @@ function LiveChartView({ selectedSymbols, ticks, orbLevels, activeSignals }) {
 
 // ── Stock Selection View ──────────────────────────────────
 function StockListView({ selectedSymbols, setSelectedSymbols, onSaveToServer }) {
-  const [slots, setSlots] = useState(() => {
+  const [slots,     setSlots]     = useState(() => {
     const s = Array(10).fill('');
     selectedSymbols.forEach((sym,i) => { s[i]=sym||''; });
     return s;
   });
+  const [allStocks, setAllStocks] = useState(INDIAN_STOCKS);
+  const [loadingStocks, setLoadingStocks] = useState(false);
+
+  // Load all NSE stocks from Fyers instruments
+  useEffect(() => {
+    const load = async () => {
+      setLoadingStocks(true);
+      try {
+        const r = await api.get('/api/instruments');
+        if (r.stocks?.length > 0) {
+          // Merge with INDIAN_STOCKS (keep prices from fallback)
+          const merged = r.stocks.map(s => ({
+            symbol: s.symbol,
+            name:   s.name,
+            price:  INDIAN_STOCKS.find(i=>i.symbol===s.symbol)?.price || 0
+          }));
+          setAllStocks(merged);
+        }
+      } catch(e) {}
+      setLoadingStocks(false);
+    };
+    load();
+  }, []);
 
   const handleSave = async () => {
     const syms = slots.filter(Boolean);
@@ -930,7 +1056,13 @@ function StockListView({ selectedSymbols, setSelectedSymbols, onSaveToServer }) 
 
   return (
     <div style={{ padding:'22px',height:'100%',overflowY:'auto' }}>
-      <h2 style={{ fontSize:19,fontWeight:800,color:SB,marginBottom:4 }}>Stock Selection</h2>
+      <div style={{ display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:4 }}>
+        <h2 style={{ fontSize:19,fontWeight:800,color:SB }}>Stock Selection</h2>
+        {loadingStocks
+          ? <span style={{ fontSize:12,color:T2 }}>Loading NSE instruments…</span>
+          : <span style={{ fontSize:12,color:G,fontWeight:600 }}>✓ {allStocks.length} stocks loaded</span>
+        }
+      </div>
       <p style={{ fontSize:13,color:T2,marginBottom:14 }}>
         Select up to 10 NSE stocks for ORB strategy. First 5-min candle H/L = entry levels.
       </p>
@@ -948,7 +1080,8 @@ function StockListView({ selectedSymbols, setSelectedSymbols, onSaveToServer }) 
             </div>
             <StockDropdown value={sym}
               onChange={v=>setSlots(p=>{const n=[...p];n[i]=v;return n;})}
-              placeholder="Search & select stock…" />
+              placeholder="Search & select stock…"
+              stockList={allStocks} />
           </div>
         ))}
       </div>
@@ -1177,8 +1310,36 @@ function TestSignalView({ authStatus }) {
 }
 
 // ── Risk & Reward View ────────────────────────────────────
-function RiskRewardView({ rrConfig, setRrConfig, selectedSymbols, ticks }) {
-  const [cfg, setCfg] = useState(rrConfig);
+function RiskRewardView({ rrConfig, setRrConfig, selectedSymbols, ticks, authStatus }) {
+  const [cfg,      setCfg]      = useState(rrConfig);
+  const [balance,  setBalance]  = useState(null);
+  const [bLoad,    setBLoad]    = useState(false);
+
+  // Sync cfg when parent rrConfig changes
+  useEffect(()=>{ setCfg(rrConfig); }, [rrConfig]);
+
+  // Fetch live balance and auto-fill capital
+  const fetchAndFill = async () => {
+    if (!authStatus?.isAuthenticated) return;
+    setBLoad(true);
+    try {
+      const r = await api.get('/api/portfolio/funds');
+      if (r.funds?.length > 0) {
+        setBalance(r.funds);
+        // Find available balance
+        const avail = r.funds.find(f =>
+          (f.title||'').toLowerCase().includes('available') ||
+          (f.title||'').toLowerCase().includes('free') ||
+          f.id === 'free_balance'
+        );
+        const val = avail ? (avail.equityAmount ?? avail.value ?? avail.currentValue ?? 0) : 0;
+        if (val > 0) setCfg(p => ({ ...p, capital: Math.floor(val) }));
+      }
+    } catch(e) {}
+    setBLoad(false);
+  };
+
+  useEffect(() => { fetchAndFill(); }, [authStatus?.isAuthenticated]);
 
   const ec  = cfg.capital * cfg.leverage;
   const rpt = (ec * cfg.riskPct) / 100;
@@ -1203,6 +1364,19 @@ function RiskRewardView({ rrConfig, setRrConfig, selectedSymbols, ticks }) {
               onChange={v=>setCfg(p=>({...p,leverage:parseInt(v)}))}
               options={[1,2,3,4,5].map(v=>({value:String(v),label:`${v}x Leverage`}))}
               tooltip="MIS leverage multiplier from Fyers" />
+            {/* Live balance indicator */}
+            {balance && (
+              <div style={{ background:'#F0FDF4',border:'1px solid #BBF7D0',borderRadius:8,
+                padding:'8px 12px',marginBottom:10,display:'flex',alignItems:'center',gap:8 }}>
+                <div style={{ width:7,height:7,borderRadius:'50%',background:G }} className="live-dot"/>
+                <span style={{ fontSize:11,color:G,fontWeight:600 }}>Balance linked from Fyers account</span>
+                <button onClick={fetchAndFill} disabled={bLoad} style={{ marginLeft:'auto',
+                  padding:'2px 8px',borderRadius:5,border:`1px solid ${G}`,background:'transparent',
+                  color:G,fontSize:10,cursor:'pointer' }}>
+                  {bLoad?'..':'Refresh'}
+                </button>
+              </div>
+            )}
             <div style={{ background:'#EEF2FF',borderRadius:8,padding:'10px 13px',
               display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4 }}>
               <span style={{ fontSize:13,color:SB }}>Effective Capital</span>
@@ -1592,7 +1766,7 @@ export default function App() {
           {activeView==='api' && <ApiCredView authStatus={authStatus} />}
           {activeView==='chart' && (
             <LiveChartView selectedSymbols={selectedSymbols} ticks={ticks}
-              orbLevels={orbLevels} activeSignals={activeSignals} />
+              orbLevels={orbLevels} activeSignals={activeSignals} authStatus={authStatus} />
           )}
           {activeView==='stocks' && (
             <StockListView selectedSymbols={selectedSymbols}
@@ -1601,7 +1775,7 @@ export default function App() {
           {activeView==='test'   && <TestSignalView authStatus={authStatus} />}
           {activeView==='rr'     && (
             <RiskRewardView rrConfig={rrConfig} setRrConfig={setRrConfig}
-              selectedSymbols={selectedSymbols} ticks={ticks} />
+              selectedSymbols={selectedSymbols} ticks={ticks} authStatus={authStatus} />
           )}
           {activeView==='syntax' && <SyntaxGenView selectedSymbols={selectedSymbols} />}
         </div>

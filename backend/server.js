@@ -490,3 +490,101 @@ server.listen(PORT, () => {
 });
 
 module.exports = { app, server, io };
+
+// INJECTED ROUTES — History, Instruments, Live Price
+// ─────────────────────────────────────────────────────────
+
+// ── Fyers Historical Candles (for chart) ─────────────────
+app.get('/api/stocks/history', async (req, res) => {
+  try {
+    const { symbol, resolution = '5', days = 5 } = req.query;
+    if (!symbol) return res.status(400).json({ error: 'symbol required' });
+    if (!fyersAuth.isAuthenticated) return res.status(401).json({ error: 'Not authenticated' });
+
+    const now      = Math.floor(Date.now() / 1000);
+    const from     = now - parseInt(days) * 24 * 60 * 60;
+    const candles  = await fyersAuth.getHistory({
+      symbol,
+      resolution,
+      rangeFrom: from,
+      rangeTo:   now
+    });
+
+    // candles = [[timestamp, open, high, low, close, volume], ...]
+    const formatted = candles.map(c => ({
+      time:   c[0] * 1000,
+      open:   c[1],
+      high:   c[2],
+      low:    c[3],
+      close:  c[4],
+      volume: c[5]
+    }));
+
+    res.json({ success: true, symbol, resolution, candles: formatted });
+  } catch (err) {
+    logger.error('[HISTORY]', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Fyers Instruments (all NSE stocks) ───────────────────
+app.get('/api/instruments', async (req, res) => {
+  try {
+    const axios = require('axios');
+    // Fyers public instruments CSV — no auth needed
+    const url = 'https://public.fyers.in/sym_details/NSE_CM.csv';
+    const response = await axios.get(url, { timeout: 15000 });
+    const lines  = response.data.split('\n').filter(Boolean);
+    const stocks = [];
+
+    lines.forEach(line => {
+      const cols = line.split(',');
+      // Format: Fytoken,ShortName,Exchange,Segment,LotSize,TickSize,ISIN,TradingSession,LastUpdateDate,ExpiryDate,SymbolTicker,Exchange,Segment,Scrip,Underlying
+      if (cols.length < 14) return;
+      const sym    = cols[13]?.trim(); // symbol like RELIANCE
+      const ticker = cols[10]?.trim(); // NSE:RELIANCE-EQ
+      if (!sym || !ticker || !ticker.includes('NSE:') || !ticker.includes('-EQ')) return;
+      stocks.push({
+        symbol: ticker,
+        name:   sym,
+        token:  cols[0]?.trim()
+      });
+    });
+
+    res.json({ success: true, count: stocks.length, stocks });
+  } catch (err) {
+    logger.error('[INSTRUMENTS]', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Live Quote (single symbol) ────────────────────────────
+app.get('/api/stocks/quote/:symbol', async (req, res) => {
+  try {
+    const symbol = decodeURIComponent(req.params.symbol);
+    // First check last tick from WebSocket
+    const tick = fyersData.getLastTick(symbol);
+    if (tick) return res.json({ success: true, source: 'websocket', quote: tick });
+    // Fallback: REST quote
+    if (!fyersAuth.isAuthenticated) return res.json({ success: false, error: 'Not authenticated' });
+    const quotes = await fyersAuth.getQuotes([symbol]);
+    const q = quotes[0]?.v || {};
+    res.json({
+      success: true,
+      source:  'rest',
+      quote: {
+        symbol,
+        ltp:    q.lp  || 0,
+        open:   q.o   || 0,
+        high:   q.h   || 0,
+        low:    q.l   || 0,
+        close:  q.c   || 0,
+        chg:    q.ch  || 0,
+        chgPct: q.chp || 0,
+        volume: q.v   || 0
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
