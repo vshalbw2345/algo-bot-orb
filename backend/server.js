@@ -38,14 +38,16 @@ const server = http.createServer(app);
 // ── Socket.io ────────────────────────────────────────────
 const io = new Server(server, {
   cors: {
-    origin:  process.env.FRONTEND_URL || 'http://localhost:3000',
-    methods: ['GET', 'POST']
-  }
+    origin:  '*',
+    methods: ['GET', 'POST'],
+    credentials: false
+  },
+  transports: ['websocket', 'polling']
 });
 
 // ── Middleware ────────────────────────────────────────────
 app.use(helmet({ contentSecurityPolicy: false }));
-app.use(cors({ origin: process.env.FRONTEND_URL || '*' }));
+app.use(cors({ origin: '*', credentials: false }));
 app.use(express.json());
 app.use(morgan('tiny'));
 
