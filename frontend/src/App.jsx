@@ -340,11 +340,9 @@ function LiveCandleChart({ candles, orbHigh, orbLow, tradeInfo, symbol }) {
     const canvas = canvasRef.current;
     const dpr = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
-    if (!rect.width) return;
-    if (canvas.width !== rect.width * dpr) {
-      canvas.width  = rect.width  * dpr;
-      canvas.height = rect.height * dpr;
-    }
+    if (!rect.width || !rect.height) return;
+    canvas.width  = rect.width  * dpr;
+    canvas.height = rect.height * dpr;
     const ctx = canvas.getContext('2d');
     ctx.save();
     ctx.scale(dpr, dpr);
@@ -646,7 +644,7 @@ function Sidebar({ active, setActive, socketOk, authOk, masterOn }) {
 // VIEWS
 // ─────────────────────────────────────────────────────────
 function DashboardView({ masterOn, setMasterOn, selectedSymbols, ticks, orbLevels,
-  activeSignals, stockToggles, onToggleStock, alerts, riskStatus }) {
+  activeSignals, stockToggles, onToggleStock, alerts, riskStatus, rrConfig }) {
 
   const totalPnl = Object.entries(activeSignals).reduce((acc,[sym,sig])=>{
     const ltp = ticks[sym]?.ltp || sig.entry;
@@ -735,7 +733,7 @@ function DashboardView({ masterOn, setMasterOn, selectedSymbols, ticks, orbLevel
               <StockCard key={sym} symbol={sym} tick={ticks[sym]} orb={orbLevels[sym]}
                 signal={activeSignals[sym]} toggleOn={stockToggles[sym]!==false}
                 onToggle={()=>onToggleStock(sym, stockToggles[sym]===false)} masterOn={masterOn}
-                rrCfg={riskStatus?.config} />
+                rrCfg={rrConfig || riskStatus?.config} />
             ) : (
               <div key={i} style={{ border:`2px dashed ${BD}`,borderRadius:12,padding:18,
                 display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
@@ -1095,7 +1093,7 @@ function StockListView({ selectedSymbols, setSelectedSymbols, onSaveToServer }) 
 }
 
 // ── Test Signal View ──────────────────────────────────────
-function TestSignalView({ authStatus }) {
+function TestSignalView({ authStatus, funds: globalFunds, setFunds: setGlobalFunds }) {
   const [sym,    setSym]    = useState('NSE:RELIANCE-EQ');
   const [side,   setSide]   = useState('BUY');
   const [qty,    setQty]    = useState('10');
@@ -1104,23 +1102,25 @@ function TestSignalView({ authStatus }) {
   const [res,    setRes]    = useState(null);
   const [hist,   setHist]   = useState([]);
   const [load,   setLoad]   = useState(false);
-  const [funds,  setFunds]  = useState(null);
   const [fLoad,  setFLoad]  = useState(false);
   const [fErr,   setFErr]   = useState(null);
 
-  // Fetch balance from Fyers
+  const funds = globalFunds || [];
+
+  // Fetch balance from Fyers — updates global state
   const fetchBalance = async () => {
     setFLoad(true); setFErr(null);
     try {
       const r = await api.get('/api/portfolio/funds');
-      setFunds(r.funds || []);
+      if (r.funds) setGlobalFunds(r.funds);
+      else setFErr('No fund data returned.');
     } catch(e) { setFErr('Could not fetch balance. Check Fyers connection.'); }
     setFLoad(false);
   };
 
-  // Auto-fetch on mount if authenticated
+  // Auto-fetch if not already loaded
   useEffect(() => {
-    if (authStatus?.isAuthenticated) fetchBalance();
+    if (authStatus?.isAuthenticated && funds.length === 0) fetchBalance();
   }, [authStatus?.isAuthenticated]);
 
   const send = async () => {
@@ -1310,36 +1310,49 @@ function TestSignalView({ authStatus }) {
 }
 
 // ── Risk & Reward View ────────────────────────────────────
-function RiskRewardView({ rrConfig, setRrConfig, selectedSymbols, ticks, authStatus }) {
-  const [cfg,      setCfg]      = useState(rrConfig);
-  const [balance,  setBalance]  = useState(null);
-  const [bLoad,    setBLoad]    = useState(false);
+function RiskRewardView({ rrConfig, setRrConfig, selectedSymbols, ticks, authStatus, funds: globalFunds, setFunds: setGlobalFunds }) {
+  const [cfg,   setCfg]  = useState(rrConfig);
+  const [bLoad, setBLoad]= useState(false);
+
+  const funds = globalFunds || [];
 
   // Sync cfg when parent rrConfig changes
-  useEffect(()=>{ setCfg(rrConfig); }, [rrConfig]);
+  useEffect(()=>{ setCfg(rrConfig); }, [JSON.stringify(rrConfig)]);
 
-  // Fetch live balance and auto-fill capital
+  // Fetch live balance and auto-fill capital from broker
   const fetchAndFill = async () => {
     if (!authStatus?.isAuthenticated) return;
     setBLoad(true);
     try {
       const r = await api.get('/api/portfolio/funds');
       if (r.funds?.length > 0) {
-        setBalance(r.funds);
-        // Find available balance
+        setGlobalFunds(r.funds);
         const avail = r.funds.find(f =>
           (f.title||'').toLowerCase().includes('available') ||
           (f.title||'').toLowerCase().includes('free') ||
           f.id === 'free_balance'
         );
-        const val = avail ? (avail.equityAmount ?? avail.value ?? avail.currentValue ?? 0) : 0;
+        const val = avail ? (avail.equityAmount??avail.value??avail.currentValue??0) : 0;
         if (val > 0) setCfg(p => ({ ...p, capital: Math.floor(val) }));
       }
     } catch(e) {}
     setBLoad(false);
   };
 
-  useEffect(() => { fetchAndFill(); }, [authStatus?.isAuthenticated]);
+  // Auto-fill on mount
+  useEffect(() => {
+    if (funds.length > 0) {
+      // Already have funds — just auto-fill capital
+      const avail = funds.find(f =>
+        (f.title||'').toLowerCase().includes('available') ||
+        (f.title||'').toLowerCase().includes('free')
+      );
+      const val = avail ? (avail.equityAmount??avail.value??avail.currentValue??0) : 0;
+      if (val > 0) setCfg(p => ({ ...p, capital: Math.floor(val) }));
+    } else {
+      fetchAndFill();
+    }
+  }, []);
 
   const ec  = cfg.capital * cfg.leverage;
   const rpt = (ec * cfg.riskPct) / 100;
@@ -1365,16 +1378,26 @@ function RiskRewardView({ rrConfig, setRrConfig, selectedSymbols, ticks, authSta
               options={[1,2,3,4,5].map(v=>({value:String(v),label:`${v}x Leverage`}))}
               tooltip="MIS leverage multiplier from Fyers" />
             {/* Live balance indicator */}
-            {balance && (
+            {funds.length > 0 && (
               <div style={{ background:'#F0FDF4',border:'1px solid #BBF7D0',borderRadius:8,
                 padding:'8px 12px',marginBottom:10,display:'flex',alignItems:'center',gap:8 }}>
                 <div style={{ width:7,height:7,borderRadius:'50%',background:G }} className="live-dot"/>
-                <span style={{ fontSize:11,color:G,fontWeight:600 }}>Balance linked from Fyers account</span>
+                <span style={{ fontSize:11,color:G,fontWeight:600 }}>✓ Balance linked from Fyers broker</span>
                 <button onClick={fetchAndFill} disabled={bLoad} style={{ marginLeft:'auto',
                   padding:'2px 8px',borderRadius:5,border:`1px solid ${G}`,background:'transparent',
                   color:G,fontSize:10,cursor:'pointer' }}>
-                  {bLoad?'..':'Refresh'}
+                  {bLoad?'Fetching..':'↺ Refresh'}
                 </button>
+              </div>
+            )}
+            {funds.length === 0 && authStatus?.isAuthenticated && (
+              <div style={{ background:'#FFF7ED',border:'1px solid #FED7AA',borderRadius:8,
+                padding:'8px 12px',marginBottom:10,display:'flex',alignItems:'center',gap:8 }}>
+                <AlertCircle size={13} color={W}/>
+                <span style={{ fontSize:11,color:W,fontWeight:600 }}>Could not fetch balance</span>
+                <button onClick={fetchAndFill} disabled={bLoad} style={{ marginLeft:'auto',
+                  padding:'2px 8px',borderRadius:5,border:`1px solid ${W}`,background:'transparent',
+                  color:W,fontSize:10,cursor:'pointer' }}>Retry</button>
               </div>
             )}
             <div style={{ background:'#EEF2FF',borderRadius:8,padding:'10px 13px',
@@ -1593,6 +1616,7 @@ export default function App() {
   const [riskStatus,     setRiskStatus]     = useState({});
   const [rrConfig,       setRrConfig]       = useState({ capital:50000,leverage:5,riskPct:2,rrRatio:2,maxSLPerDay:3 });
   const [sysAlerts,      setSysAlerts]      = useState([]);
+  const [funds,          setFunds]          = useState([]);   // global broker balance
 
   const [activeView, setActiveView] = useState('dashboard');
   const [time, setTime] = useState(new Date());
@@ -1602,7 +1626,24 @@ export default function App() {
 
   // Pull initial state from server
   useEffect(()=>{
-    api.get('/api/auth/status').then(r=>setAuthStatus(r)).catch(()=>{});
+    api.get('/api/auth/status').then(r=>{
+      setAuthStatus(r);
+      // Auto-fetch balance once authenticated
+      if(r.isAuthenticated) {
+        api.get('/api/portfolio/funds').then(fr=>{
+          if(fr.funds?.length>0) {
+            setFunds(fr.funds);
+            // Auto-fill capital in rrConfig from available balance
+            const avail = fr.funds.find(f=>
+              (f.title||'').toLowerCase().includes('available') ||
+              (f.title||'').toLowerCase().includes('free')
+            );
+            const val = avail ? (avail.equityAmount??avail.value??avail.currentValue??0) : 0;
+            if(val>0) setRrConfig(p=>({...p, capital:Math.floor(val)}));
+          }
+        }).catch(()=>{});
+      }
+    }).catch(()=>{});
     api.get('/api/risk/status').then(r=>setRiskStatus(r)).catch(()=>{});
   },[]);
 
@@ -1761,7 +1802,8 @@ export default function App() {
             <DashboardView masterOn={masterOn} setMasterOn={setMasterOn}
               selectedSymbols={selectedSymbols} ticks={ticks} orbLevels={orbLevels}
               activeSignals={activeSignals} stockToggles={stockToggles}
-              onToggleStock={handleStockToggle} alerts={alerts} riskStatus={riskStatus} />
+              onToggleStock={handleStockToggle} alerts={alerts} riskStatus={riskStatus}
+              rrConfig={rrConfig} />
           )}
           {activeView==='api' && <ApiCredView authStatus={authStatus} />}
           {activeView==='chart' && (
@@ -1772,10 +1814,11 @@ export default function App() {
             <StockListView selectedSymbols={selectedSymbols}
               setSelectedSymbols={setSelectedSymbols} onSaveToServer={handleSaveStocks} />
           )}
-          {activeView==='test'   && <TestSignalView authStatus={authStatus} />}
+          {activeView==='test'   && <TestSignalView authStatus={authStatus} funds={funds} setFunds={setFunds} />}
           {activeView==='rr'     && (
             <RiskRewardView rrConfig={rrConfig} setRrConfig={setRrConfig}
-              selectedSymbols={selectedSymbols} ticks={ticks} authStatus={authStatus} />
+              selectedSymbols={selectedSymbols} ticks={ticks} authStatus={authStatus}
+              funds={funds} setFunds={setFunds} />
           )}
           {activeView==='syntax' && <SyntaxGenView selectedSymbols={selectedSymbols} />}
         </div>
