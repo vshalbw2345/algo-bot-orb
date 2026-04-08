@@ -719,6 +719,48 @@ function DashboardView({ masterOn, setMasterOn, selectedSymbols, ticks, orbLevel
         );
       })()}
 
+      {/* ── Active Rules Panel ─────────────────────────── */}
+      {(()=>{
+        const cap = rrConfig?.capital||50000;
+        const lev = rrConfig?.leverage||5;
+        const rsk = rrConfig?.riskPct||2;
+        const rr  = rrConfig?.rrRatio||2;
+        const msl = rrConfig?.maxSLPerDay||3;
+        const ec  = cap*lev;
+        const rpt = ec*rsk/100;
+        const slHits = Object.values(riskStatus?.daily?.stockSLHits||{}).reduce((a,b)=>a+b,0);
+        const pnl    = riskStatus?.daily?.totalPnl || 0;
+        const dll    = rpt*msl;
+        const rules = [
+          { label:'Fyers Auth',       ok: true,                  val: 'Connected',                            color:G },
+          { label:'Invested Capital', ok: cap>0,                 val: `₹${cap.toLocaleString('en-IN')}`,     color:SB },
+          { label:'Leverage',         ok: lev>0,                 val: `${lev}x → EC ₹${(ec/100000).toFixed(1)}L`, color:SB },
+          { label:'Risk / Trade',     ok: rpt>0,                 val: `₹${rpt.toFixed(0)} (${rsk}%)`,        color:W },
+          { label:'R:R Ratio',        ok: rr>=1,                 val: `1:${rr} → Target ${rr}x SL`,         color:G },
+          { label:'Max SL / Day',     ok: slHits<msl,            val: `${slHits}/${msl} hits used`,          color:slHits>=msl?R:G },
+          { label:'Daily Loss Cap',   ok: pnl>-dll,              val: `₹${Math.abs(pnl).toFixed(0)} of ₹${dll.toFixed(0)}`, color:pnl<=-dll*0.7?R:W },
+          { label:'Master Toggle',    ok: masterOn,              val: masterOn?'ON — Bot Active':'OFF — No trades', color:masterOn?G:R },
+          { label:'Stocks Selected',  ok: selectedSymbols.length>0, val: `${selectedSymbols.length} stocks`,  color:selectedSymbols.length>0?G:W },
+          { label:'Square-off',       ok: true,                  val: 'Auto at 15:25 PM',                    color:G },
+        ];
+        return (
+          <div style={{ marginBottom:16 }}>
+            <div style={{ fontWeight:700,fontSize:13,color:T1,marginBottom:8,display:'flex',alignItems:'center',gap:6 }}>
+              <Shield size={14} color={SB}/> Active Rules & Status
+            </div>
+            <div style={{ display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:7 }}>
+              {rules.map((r,i)=>(
+                <div key={i} style={{ background:r.color+'10',border:`1.5px solid ${r.color}30`,
+                  borderRadius:9,padding:'8px 11px',display:'flex',flexDirection:'column',gap:3 }}>
+                  <div style={{ fontSize:10,color:T2,fontWeight:600 }}>{r.label}</div>
+                  <div style={{ fontSize:11,fontWeight:700,color:r.color }}>{r.val}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Risk halt warning */}
       {riskStatus?.daily?.tradingHalted && (
         <div style={{ background:'#FFF1F2',border:`1px solid #FECDD3`,borderRadius:10,
@@ -1504,7 +1546,7 @@ function RiskRewardView({ rrConfig, setRrConfig, selectedSymbols, ticks, authSta
               {selectedSymbols.filter(Boolean).map((sym,i)=>{
                 const si   = INDIAN_STOCKS.find(s=>s.symbol===sym);
                 const cmp  = ticks[sym]?.ltp || si?.price || 1000;
-                const slPts= cmp * (cfg.riskPct/100);
+                const slPts= cmp * (riskPct/100);
                 const qty  = Math.max(1, Math.floor(rpt/slPts));
                 return (
                   <div key={i} style={{ display:'grid',gridTemplateColumns:'1.5fr 1fr 1fr 1fr 1fr',
@@ -1855,7 +1897,19 @@ export default function App() {
   const [activeSignals,  setActiveSignals]  = useState({});
   const [alerts,         setAlerts]         = useState([]);
   const [riskStatus,     setRiskStatus]     = useState({});
-  const [rrConfig,       setRrConfig]       = useState({ capital:50000,leverage:5,riskPct:2,rrRatio:2,maxSLPerDay:3 });
+  const [rrConfig, setRrConfig] = useState(() => {
+    // Load from localStorage on startup
+    try {
+      const saved = localStorage.getItem('orb_rr_config');
+      if (saved) return JSON.parse(saved);
+    } catch(_) {}
+    return { capital:50000, leverage:5, riskPct:2, rrRatio:2, maxSLPerDay:3 };
+  });
+
+  // Auto-save rrConfig to localStorage whenever it changes
+  useEffect(() => {
+    try { localStorage.setItem('orb_rr_config', JSON.stringify(rrConfig)); } catch(_) {}
+  }, [JSON.stringify(rrConfig)]);
   const [sysAlerts,      setSysAlerts]      = useState([]);
   const [funds,          setFunds]          = useState([]);   // global broker balance
 
