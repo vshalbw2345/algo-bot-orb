@@ -1334,48 +1334,34 @@ function RiskRewardView({ rrConfig, setRrConfig, selectedSymbols, ticks, authSta
   const [bLoad, setBLoad] = useState(false);
   const funds = globalFunds || [];
 
-  // ── Fetch balance and update global rrConfig capital ────
+  // ── Fetch balance and update capital ─────────────────────
   const fetchAndFill = async () => {
     setBLoad(true);
     try {
       const r = await api.get('/api/portfolio/funds');
-      if (r.funds?.length > 0) {
-        setGlobalFunds(r.funds);
-        // Find available balance — try multiple field names
-        let bal = 0;
-        for (const f of r.funds) {
-          const t = (f.title||f.id||'').toLowerCase();
-          const v = parseFloat(f.equityAmount??f.value??f.currentValue??f.val??0);
-          if (v > 0 && (t.includes('available') || t.includes('free') || t.includes('cash'))) {
-            bal = Math.floor(v); break;
+      if (r.success) {
+        if (r.funds?.length > 0) setGlobalFunds(r.funds);
+        // Use backend-computed availableBalance
+        let bal = r.availableBalance || 0;
+        // Brute-force fallback
+        if (bal === 0 && r.funds?.length > 0) {
+          for (const f of r.funds) {
+            for (const key of Object.keys(f)) {
+              const v = parseFloat(f[key]);
+              if (!isNaN(v) && v > 100) { bal = Math.max(bal, v); }
+            }
           }
         }
-        if (bal === 0 && r.funds[0]) {
-          bal = Math.floor(parseFloat(r.funds[0].equityAmount??r.funds[0].value??r.funds[0].currentValue??0));
-        }
-        if (bal > 0) setRrConfig(p => ({ ...p, capital: bal }));
+        if (bal > 0) setRrConfig(p => ({ ...p, capital: Math.floor(bal) }));
       }
     } catch(e) {}
     setBLoad(false);
   };
 
-  // Auto-fill from existing global funds on mount
+  // Auto-fetch on mount
   useEffect(() => {
-    if (funds.length > 0) {
-      let bal = 0;
-      for (const f of funds) {
-        const t = (f.title||f.id||'').toLowerCase();
-        const v = parseFloat(f.equityAmount??f.value??f.currentValue??f.val??0);
-        if (v > 0 && (t.includes('available')||t.includes('free')||t.includes('cash'))) {
-          bal = Math.floor(v); break;
-        }
-      }
-      if (bal === 0 && funds[0]) bal = Math.floor(parseFloat(funds[0].equityAmount??funds[0].value??funds[0].currentValue??0));
-      if (bal > 0) setRrConfig(p => ({ ...p, capital: bal }));
-    } else if (authStatus?.isAuthenticated) {
-      fetchAndFill();
-    }
-  }, [funds.length, authStatus?.isAuthenticated]);
+    if (authStatus?.isAuthenticated) fetchAndFill();
+  }, [authStatus?.isAuthenticated]);
 
   // Use rrConfig DIRECTLY — no local copy — always in sync
   const capital     = rrConfig.capital     || 50000;
@@ -1407,29 +1393,43 @@ function RiskRewardView({ rrConfig, setRrConfig, selectedSymbols, ticks, authSta
               onChange={v=>update('leverage',parseInt(v))}
               options={[1,2,3,4,5].map(v=>({value:String(v),label:`${v}x Leverage`}))}
               tooltip="MIS leverage multiplier from Fyers" />
-            {/* Live balance indicator */}
-            {funds.length > 0 && (
-              <div style={{ background:'#F0FDF4',border:'1px solid #BBF7D0',borderRadius:8,
-                padding:'8px 12px',marginBottom:10,display:'flex',alignItems:'center',gap:8 }}>
-                <div style={{ width:7,height:7,borderRadius:'50%',background:G }} className="live-dot"/>
-                <span style={{ fontSize:11,color:G,fontWeight:600 }}>✓ Balance linked from Fyers broker</span>
-                <button onClick={fetchAndFill} disabled={bLoad} style={{ marginLeft:'auto',
-                  padding:'2px 8px',borderRadius:5,border:`1px solid ${G}`,background:'transparent',
-                  color:G,fontSize:10,cursor:'pointer' }}>
-                  {bLoad?'Fetching..':'↺ Refresh'}
+            {/* Balance display — always visible */}
+            <div style={{ background: funds.length>0?'#F0FDF4':'#F8FAFC',
+              border:`1px solid ${funds.length>0?'#BBF7D0':BD}`,borderRadius:8,
+              padding:'10px 12px',marginBottom:10 }}>
+              <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6 }}>
+                <span style={{ fontSize:11,fontWeight:700,color:funds.length>0?G:T2 }}>
+                  {funds.length>0?'✓ Fyers Balance':'Fyers Balance'}
+                </span>
+                <button onClick={fetchAndFill} disabled={bLoad} style={{ padding:'3px 10px',
+                  borderRadius:5,border:`1px solid ${SB}`,background:SB,
+                  color:'#fff',fontSize:11,cursor:'pointer',fontWeight:600 }}>
+                  {bLoad?'Fetching...':'↺ Sync Balance'}
                 </button>
               </div>
-            )}
-            {funds.length === 0 && authStatus?.isAuthenticated && (
-              <div style={{ background:'#FFF7ED',border:'1px solid #FED7AA',borderRadius:8,
-                padding:'8px 12px',marginBottom:10,display:'flex',alignItems:'center',gap:8 }}>
-                <AlertCircle size={13} color={W}/>
-                <span style={{ fontSize:11,color:W,fontWeight:600 }}>Could not fetch balance</span>
-                <button onClick={fetchAndFill} disabled={bLoad} style={{ marginLeft:'auto',
-                  padding:'2px 8px',borderRadius:5,border:`1px solid ${W}`,background:'transparent',
-                  color:W,fontSize:10,cursor:'pointer' }}>Retry</button>
-              </div>
-            )}
+              {funds.length > 0 ? (
+                <div style={{ display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:6 }}>
+                  {funds.slice(0,6).map((f,i)=>{
+                    const v = parseFloat(f.equityAmount??f.value??f.currentValue??f.val??0);
+                    return (
+                      <div key={i} style={{ background:'#fff',borderRadius:6,padding:'5px 8px',
+                        border:`1px solid ${BD}` }}>
+                        <div style={{ fontSize:9,color:T2,marginBottom:2 }}>{f.title||f.id||`Fund ${i+1}`}</div>
+                        <div className="mono" style={{ fontSize:12,fontWeight:700,color:v>0?T1:T2 }}>
+                          ₹{v.toLocaleString('en-IN',{maximumFractionDigits:0})}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div style={{ fontSize:12,color:T2 }}>
+                  {authStatus?.isAuthenticated
+                    ? 'Click Sync Balance to fetch from Fyers'
+                    : 'Login to Fyers first to sync balance'}
+                </div>
+              )}
+            </div>
             <div style={{ background:'#EEF2FF',borderRadius:8,padding:'10px 13px',
               display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4 }}>
               <span style={{ fontSize:13,color:SB }}>Effective Capital</span>
@@ -1853,36 +1853,32 @@ export default function App() {
   // Clock
   useEffect(()=>{ const t=setInterval(()=>setTime(new Date()),1000); return ()=>clearInterval(t); },[]);
 
-  // ── Extract available balance from Fyers funds array ────
-  const extractBalance = (arr) => {
-    if (!arr?.length) return 0;
-    // Fyers returns fund_limit array with equityAmount field
-    // Try common field names
-    for (const f of arr) {
-      const v = f.equityAmount ?? f.value ?? f.currentValue ?? f.val ?? 0;
-      const t = (f.title || f.id || '').toLowerCase();
-      if (t.includes('available') || t.includes('free') || t.includes('cash')) {
-        const n = parseFloat(v);
-        if (n > 0) return Math.floor(n);
-      }
-    }
-    // Fallback: use first positive value
-    for (const f of arr) {
-      const v = parseFloat(f.equityAmount ?? f.value ?? f.currentValue ?? f.val ?? 0);
-      if (v > 0) return Math.floor(v);
-    }
-    return 0;
-  };
-
   // ── Load balance and update capital ─────────────────────
   const loadBalance = useCallback(async () => {
     try {
       const fr = await api.get('/api/portfolio/funds');
-      if (fr.success && fr.funds?.length > 0) {
-        setFunds(fr.funds);
-        const bal = extractBalance(fr.funds);
-        if (bal > 0) setRrConfig(p => ({ ...p, capital: bal }));
-        return bal;
+      if (fr.success) {
+        if (fr.funds?.length > 0) setFunds(fr.funds);
+        // Backend now computes availableBalance — use it directly
+        const bal = fr.availableBalance || 0;
+        if (bal > 0) {
+          setRrConfig(p => ({ ...p, capital: Math.floor(bal) }));
+          return Math.floor(bal);
+        }
+        // Final fallback: brute-force scan all fund fields
+        if (fr.funds?.length > 0) {
+          let best = 0;
+          for (const f of fr.funds) {
+            for (const key of Object.keys(f)) {
+              const v = parseFloat(f[key]);
+              if (!isNaN(v) && v > 100) best = Math.max(best, v);
+            }
+          }
+          if (best > 0) {
+            setRrConfig(p => ({ ...p, capital: Math.floor(best) }));
+            return Math.floor(best);
+          }
+        }
       }
     } catch(_) {}
     return 0;

@@ -177,7 +177,20 @@ app.get('/api/portfolio/orders', async (req, res) => {
 app.get('/api/portfolio/funds', async (req, res) => {
   try {
     const funds = await fyersAuth.getFunds();
-    res.json({ success: true, funds });
+    // Also compute best available balance guess
+    let availableBalance = 0;
+    if (funds?.length > 0) {
+      // Try every field on every object to find a positive number
+      for (const f of funds) {
+        for (const key of Object.keys(f)) {
+          const v = parseFloat(f[key]);
+          if (!isNaN(v) && v > 100) { // any value > 100 is likely a balance
+            availableBalance = Math.max(availableBalance, v);
+          }
+        }
+      }
+    }
+    res.json({ success: true, funds, availableBalance, raw: funds });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
