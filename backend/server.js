@@ -516,14 +516,23 @@ app.get('/api/stocks/history', async (req, res) => {
     if (!symbol) return res.status(400).json({ error: 'symbol required' });
     if (!fyersAuth.isAuthenticated) return res.status(401).json({ error: 'Not authenticated' });
 
-    const now      = Math.floor(Date.now() / 1000);
-    const from     = now - parseInt(days) * 24 * 60 * 60;
-    const candles  = await fyersAuth.getHistory({
+    const dayjs = require('dayjs');
+    const now   = dayjs();
+    // Use date string format YYYY-MM-DD for Fyers v3
+    const rangeTo   = now.format('YYYY-MM-DD');
+    const rangeFrom = now.subtract(parseInt(days), 'day').format('YYYY-MM-DD');
+
+    const candles = await fyersAuth.getHistory({
       symbol,
       resolution,
-      rangeFrom: from,
-      rangeTo:   now
+      rangeFrom,
+      rangeTo,
+      dateFormat: 1   // 1 = epoch, 0 = date string
     });
+
+    if (!candles || candles.length === 0) {
+      return res.json({ success: true, symbol, resolution, candles: [], message: 'No data returned' });
+    }
 
     // candles = [[timestamp, open, high, low, close, volume], ...]
     const formatted = candles.map(c => ({
@@ -535,10 +544,10 @@ app.get('/api/stocks/history', async (req, res) => {
       volume: c[5]
     }));
 
-    res.json({ success: true, symbol, resolution, candles: formatted });
+    res.json({ success: true, symbol, resolution, candles: formatted, count: formatted.length });
   } catch (err) {
     logger.error('[HISTORY]', err.message);
-    res.status(500).json({ success: false, error: err.message });
+    res.json({ success: false, error: err.message, candles: [] });
   }
 });
 
