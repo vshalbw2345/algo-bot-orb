@@ -123,24 +123,24 @@ class ORBEngine extends EventEmitter {
     const now = new Date();
     const h = now.getHours(), m = now.getMinutes();
 
-    // ── 1. Lock ORB after 9:20 AM ────────────────────────
+    // ── 1. Lock ORB at 9:20 AM ONLY from live ticks ─────────
+    // If already locked from history (setORBFromHistory), skip
     if (!this.orbLevels[symbol]?.locked) {
-      const afterORB = (h > this.ORB_END_H) || (h === this.ORB_END_H && m >= this.ORB_END_M);
-      if (afterORB) {
-        // Use tracked range (9:15-9:20) if available, else use candle
-        const tracked = this.orbTracking[symbol];
-        const orbHigh = tracked ? tracked.high : candle.high;
-        const orbLow  = tracked ? tracked.low  : candle.low;
+      const tracked = this.orbTracking[symbol];
+      // Only lock at exactly 9:20-9:21 AM AND only if we have tracked data
+      const isLockTime = h === this.ORB_END_H && (m === this.ORB_END_M || m === this.ORB_END_M + 1);
+      if (isLockTime && tracked) {
         this.orbLevels[symbol] = {
-          high:     orbHigh,
-          low:      orbLow,
-          locked:   true,
-          lockedAt: new Date()
+          high: tracked.high, low: tracked.low,
+          locked: true, lockedAt: new Date(), source: 'live'
         };
-        logger.info(`[ORB] ${symbol} → ORB locked. High: ${orbHigh} | Low: ${orbLow} (tracked: ${!!tracked})`);
-        this.emit('orbLocked', { symbol, high: orbHigh, low: orbLow, candle });
+        logger.info(`[ORB] ${symbol} LOCKED from live ticks. H=${tracked.high} L=${tracked.low}`);
+        this.emit('orbLocked', { symbol, high: tracked.high, low: tracked.low, candle });
         return;
       }
+      // Past 9:21 but no lock — don't lock with current candle data
+      // setORBFromHistory() will handle this via REST call
+      return;
     }
 
     const orb = this.orbLevels[symbol];
@@ -298,6 +298,42 @@ class ORBEngine extends EventEmitter {
   getCandles(symbol, tf = '5M') {
     const store = tf === '1M' ? this.candles1M : this.candles5M;
     return (store[symbol] || []).slice(-100);
+  }
+
+  // ── Set ORB from historical candles (fetched from Fyers) ──
+  setORBFromHistory(symbol, candles) {
+    if (!candles?.length) return;
+
+    const today = new Date();
+    const todayStr = today.toDateString();
+
+    // Find today's candles
+    const todayCandles = candles.filter(c => {
+      const d = new Date(c.time);
+      return d.toDateString() === todayStr;
+    });
+
+    if (!todayCandles.length) {
+      logger.warn(`[ORB] No today candles for ${symbol}`);
+      return;
+    }
+
+    // First candle of today = 9:15 AM ORB candle
+    const firstCandle = todayCandles[0];
+    const orbHigh = firstCandle.high;
+    const orbLow  = firstCandle.low;
+
+    if (!this.orbLevels[symbol]?.locked) {
+      this.orbLevels[symbol] = {
+        high:     orbHigh,
+        low:      orbLow,
+        locked:   true,
+        lockedAt: new Date(),
+        source:   'historical'
+      };
+      logger.info(`[ORB] ${symbol} ORB set from history: H=${orbHigh} L=${orbLow}`);
+      this.emit('orbLocked', { symbol, high: orbHigh, low: orbLow });
+    }
   }
 
   // ── Get ORB level for symbol ──────────────────────────────

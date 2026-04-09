@@ -46,12 +46,16 @@ const io = new Server(server, {
 });
 
 // ── Middleware ────────────────────────────────────────────
+app.set('trust proxy', 1);  // Trust Render.com proxy
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({ origin: '*', credentials: false }));
 app.use(express.json());
 app.use(morgan('tiny'));
 
-const limiter = rateLimit({ windowMs: 60000, max: 200 });
+const limiter = rateLimit({ 
+  windowMs: 60000, max: 200,
+  validate: { xForwardedForHeader: false }  // Fix for Render.com proxy
+});
 app.use('/api/', limiter);
 
 // ── Persistent State File ────────────────────────────────
@@ -169,6 +173,33 @@ app.post('/api/stocks/select', (req, res) => {
 
   logger.info(`[SERVER] Stocks updated: ${selectedSymbols.join(', ')}`);
   saveState();
+
+  // Auto-fetch ORB from history for each symbol if after 9:20 AM
+  const now = new Date();
+  const h = now.getHours(), m = now.getMinutes();
+  const afterORB = (h > 9) || (h === 9 && m >= 20);
+  if (afterORB && fyersAuth.isAuthenticated) {
+    selectedSymbols.forEach(async (sym) => {
+      try {
+        const dayjs = require('dayjs');
+        const today = dayjs().format('YYYY-MM-DD');
+        const candles = await fyersAuth.getHistory({
+          symbol: sym, resolution: '5',
+          rangeFrom: today, rangeTo: today, dateFormat: 0
+        });
+        if (candles?.length > 0) {
+          const formatted = candles.map(c => ({
+            time: c[0]*1000, open:c[1], high:c[2], low:c[3], close:c[4], volume:c[5]
+          }));
+          orbEngine.setORBFromHistory(sym, formatted);
+          emit('orbLocked', { symbol: sym, ...orbEngine.getORBLevel(sym) });
+        }
+      } catch(e) {
+        logger.warn(`[SERVER] Could not fetch ORB history for ${sym}: ${e.message}`);
+      }
+    });
+  }
+
   res.json({ success: true, subscribed: selectedSymbols });
 });
 
