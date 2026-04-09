@@ -54,14 +54,39 @@ app.use(morgan('tiny'));
 const limiter = rateLimit({ windowMs: 60000, max: 200 });
 app.use('/api/', limiter);
 
+// ── Persistent State File ────────────────────────────────
+const STATE_FILE = path.join(__dirname, 'state.json');
+
+function loadState() {
+  try {
+    if (fs.existsSync(STATE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+      logger.info('[STATE] Loaded from file: ' + (data.selectedSymbols||[]).length + ' stocks');
+      return data;
+    }
+  } catch(e) { logger.warn('[STATE] Could not load state:', e.message); }
+  return {};
+}
+
+function saveState() {
+  try {
+    fs.writeFileSync(STATE_FILE, JSON.stringify({
+      selectedSymbols, stockToggles, rrConfig, masterEnabled
+    }, null, 2));
+  } catch(e) { logger.warn('[STATE] Could not save state:', e.message); }
+}
+
 // ── State ─────────────────────────────────────────────────
-let selectedSymbols = [];   // ["NSE:RELIANCE-EQ", ...]
-let masterEnabled   = false;
-let stockToggles    = {};   // "NSE:RELIANCE-EQ" → true/false
-let rrConfig        = {
+const savedState    = loadState();
+let selectedSymbols = savedState.selectedSymbols || [];
+let masterEnabled   = savedState.masterEnabled   || false;
+let stockToggles    = savedState.stockToggles    || {};
+let rrConfig        = savedState.rrConfig        || {
   capital: 50000, leverage: 5, riskPct: 2, rrRatio: 2, maxSLPerDay: 3
 };
-let alertLog        = [];   // all alerts
+let alertLog        = [];
+
+logger.info('[STATE] Starting with ' + selectedSymbols.length + ' stocks: ' + selectedSymbols.join(', '));
 
 // ── Helper: broadcast to all Socket.io clients ────────────
 const emit = (event, data) => io.emit(event, { ...data, ts: new Date().toISOString() });
@@ -90,6 +115,14 @@ app.get('/api/auth/callback', async (req, res) => {
     // Init data feed
     fyersData.init(process.env.FYERS_APP_ID, fyersAuth.accessToken);
     fyersData.connect();
+
+    // Auto-subscribe saved stocks after auth
+    setTimeout(() => {
+      if (selectedSymbols.length > 0) {
+        fyersData.subscribe(selectedSymbols);
+        logger.info('[SERVER] Auto-subscribed ' + selectedSymbols.length + ' saved stocks');
+      }
+    }, 3000);
 
     emit('authSuccess', { profile: fyersAuth.profile });
     // Redirect to frontend
@@ -135,6 +168,7 @@ app.post('/api/stocks/select', (req, res) => {
   selectedSymbols.forEach(s => orbEngine.setStockToggle(s, stockToggles[s] !== false));
 
   logger.info(`[SERVER] Stocks updated: ${selectedSymbols.join(', ')}`);
+  saveState();
   res.json({ success: true, subscribed: selectedSymbols });
 });
 
@@ -237,6 +271,7 @@ app.post('/api/risk/config', (req, res) => {
   riskManager.updateConfig(rrConfig);
   orbEngine.updateConfig(rrConfig);
   emit('configUpdated', rrConfig);
+  saveState();
   res.json({ success: true, config: rrConfig });
 });
 
@@ -253,6 +288,7 @@ app.post('/api/control/master', (req, res) => {
   orbEngine.setEnabled(masterEnabled);
   logger.info(`[SERVER] Master trading: ${masterEnabled ? 'ON' : 'OFF'}`);
   emit('masterToggle', { enabled: masterEnabled });
+  saveState();
   res.json({ success: true, enabled: masterEnabled });
 });
 
