@@ -447,7 +447,7 @@ orbEngine.on('signal', async (signal) => {
     sl:     signal.sl,
     target: signal.target,
     qty:    signal.qty,
-    msg:    `ORB ${signal.direction} signal → Entry:${signal.entry} SL:${signal.sl} Tgt:${signal.target}`,
+    msg:    `ORB ${signal.direction} signal → Entry:${signal.entry} SL:${signal.sl} Tgt:${signal.target} Qty:${signal.qty} SLpts:${signal.slPoints}`,
     ts:     new Date().toISOString(),
     status: 'PENDING'
   };
@@ -474,9 +474,25 @@ orbEngine.on('signal', async (signal) => {
   if (result.entry?.success) {
     orbEngine.registerSignal(signal);
     _updateAlertStatus(signal.symbol, 'EXECUTED');
+    // Add execution details to alert
+    _addAlert({
+      type:   'ORDER_PLACED',
+      symbol: signal.symbol,
+      msg:    `✅ Order placed → ID:${result.entry.orderId} | ${signal.direction} ${signal.qty} @ ₹${signal.entry} | SL:₹${signal.sl} Tgt:₹${signal.target}`,
+      ts:     new Date().toISOString(),
+      status: 'EXECUTED'
+    });
     emit('orderExecuted', { signal, result });
   } else {
     _updateAlertStatus(signal.symbol, 'ORDER_FAILED');
+    // Add failure details
+    _addAlert({
+      type:   'ORDER_FAILED',
+      symbol: signal.symbol,
+      msg:    `❌ Order FAILED → ${signal.direction} ${signal.qty} shares @ ₹${signal.entry} | Error: ${result.entry?.error}`,
+      ts:     new Date().toISOString(),
+      status: 'FAILED'
+    });
     emit('orderFailed', { symbol: signal.symbol, error: result.entry?.error });
   }
 });
