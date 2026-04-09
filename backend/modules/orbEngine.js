@@ -164,10 +164,14 @@ class ORBEngine extends EventEmitter {
     }
 
     // ── 6. ORB Breakout detection on CANDLE CLOSE ─────────
+    // BUY:  close > ORB High AND low < ORB High (candle crossed through)
+    // SELL: close < ORB Low  AND high > ORB Low (candle crossed through)
     let direction = null;
-    if (candle.close > orb.high) direction = 'BUY';
-    if (candle.close < orb.low)  direction = 'SELL';
+    if (candle.close > orb.high && candle.low < orb.high)  direction = 'BUY';
+    if (candle.close < orb.low  && candle.high > orb.low)  direction = 'SELL';
     if (!direction) return;
+
+    logger.info(`[ORB] Breakout check: close=${candle.close} high=${candle.high} low=${candle.low} orbHigh=${orb.high} orbLow=${orb.low} → ${direction}`);
 
     // ── 7. Calculate entry / SL / Target / Qty ────────────
     const entry    = candle.close;
