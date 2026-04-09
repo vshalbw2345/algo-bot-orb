@@ -334,7 +334,7 @@ function StockDropdown({ value, onChange, placeholder, stockList }) {
 // ─────────────────────────────────────────────────────────
 // CANDLESTICK CHART (Canvas-based, receives live candles)
 // ─────────────────────────────────────────────────────────
-function LiveCandleChart({ candles, orbHigh, orbLow, tradeInfo, symbol }) {
+function LiveCandleChart({ candles, orbHigh, orbLow, tradeInfo, symbol, firstCandleHighlight }) {
   const canvasRef = useRef(null);
   const rafRef    = useRef(null);
   const dataRef   = useRef({ candles, orbHigh, orbLow, tradeInfo });
@@ -377,13 +377,34 @@ function LiveCandleChart({ candles, orbHigh, orbLow, tradeInfo, symbol }) {
       ctx.fillText(price.toFixed(2), W-pad.right+5, yp+4);
     }
 
-    // ORB lines
+    // ── First candle highlight box ─────────────────────────
+    if (firstCandleHighlight && candles.length > 0) {
+      const fc = candles[0];
+      const x1 = pad.left;
+      const x2 = xOf(0) + cw/2 + 2;
+      const yTop = yOf(fc.high);
+      const yBot = yOf(fc.low);
+      ctx.save();
+      ctx.fillStyle = 'rgba(255,215,0,0.12)';
+      ctx.fillRect(x1, yTop, x2-x1, yBot-yTop);
+      ctx.strokeStyle = '#F59E0B';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([]);
+      ctx.strokeRect(x1, yTop, x2-x1, yBot-yTop);
+      ctx.font = 'bold 9px JetBrains Mono,monospace';
+      ctx.fillStyle = '#F59E0B';
+      ctx.textAlign = 'left';
+      ctx.fillText('ORB', x1+3, yTop-3);
+      ctx.restore();
+    }
+
+    // ORB lines (dashed horizontal)
     [orbHigh, orbLow].forEach((level, isLow) => {
       if (!level) return;
       const color = isLow ? R : G;
       const label = isLow ? `ORB L ${level.toFixed(2)}` : `ORB H ${level.toFixed(2)}`;
       const yp = yOf(level);
-      ctx.save(); ctx.strokeStyle=color; ctx.lineWidth=1.5; ctx.setLineDash([7,4]);
+      ctx.save(); ctx.strokeStyle=color; ctx.lineWidth=2; ctx.setLineDash([7,4]);
       ctx.beginPath(); ctx.moveTo(pad.left,yp); ctx.lineTo(W-pad.right,yp); ctx.stroke(); ctx.restore();
       ctx.fillStyle=color; ctx.font='bold 10px JetBrains Mono,monospace'; ctx.textAlign='right';
       ctx.fillText(label, W-pad.right-4, isLow ? yp+13 : yp-4);
@@ -933,53 +954,93 @@ function ApiCredView({ authStatus }) {
 
 // ── Live Chart View ───────────────────────────────────────
 function LiveChartView({ selectedSymbols, ticks, orbLevels, activeSignals, authStatus }) {
-  const [chartSym,    setChartSym]    = useState(selectedSymbols[0] || 'NSE:RELIANCE-EQ');
-  const [tf,          setTf]          = useState('5');
-  const [candles,     setCandles]     = useState([]);
-  const [loading,     setLoading]     = useState(false);
-  const [livePrice,   setLivePrice]   = useState(null);
+  const [chartSym,  setChartSym]  = useState(selectedSymbols[0] || 'NSE:RELIANCE-EQ');
+  const [tf,        setTf]        = useState('5');
+  const [candles,   setCandles]   = useState([]);
+  const [loading,   setLoading]   = useState(false);
+  const [livePrice, setLivePrice] = useState(null);
+  const [chartOrb,  setChartOrb]  = useState({ high:null, low:null }); // computed from chart data
 
-  // Map timeframe label to Fyers resolution
-  const TF_MAP = { '1':'1','3':'3','5':'5','15':'15','30':'30','60':'60','D':'D','W':'W' };
   const TF_LABELS = [
     {k:'1',l:'1M'},{k:'3',l:'3M'},{k:'5',l:'5M'},{k:'15',l:'15M'},
     {k:'30',l:'30M'},{k:'60',l:'1H'},{k:'D',l:'1D'},{k:'W',l:'1W'}
   ];
 
-  // Fetch history from Fyers API
+  // ── Compute ORB from first 5-min candle of today ──────────
+  const computeORBFromCandles = (candleList) => {
+    if (!candleList?.length) return { high:null, low:null };
+    
+    // Find today's date
+    const today = new Date();
+    const todayStr = today.toDateString();
+    
+    // Find candles from today only
+    const todayCandles = candleList.filter(c => {
+      const d = new Date(c.time);
+      return d.toDateString() === todayStr;
+    });
+    
+    if (todayCandles.length === 0) return { high:null, low:null };
+    
+    // First candle of today = 9:15 AM candle
+    const firstCandle = todayCandles[0];
+    
+    // For 5M resolution — first candle IS the ORB candle (9:15-9:20)
+    // For 1M — take first 5 candles (9:15, 9:16, 9:17, 9:18, 9:19)
+    // For 15M+ — take first candle
+    let orbCandles = [];
+    if (tf === '5') {
+      orbCandles = [todayCandles[0]]; // first 5M candle
+    } else if (tf === '1' || tf === '3') {
+      // Take candles from 9:15 to 9:20
+      orbCandles = todayCandles.filter(c => {
+        const d = new Date(c.time);
+        const mins = d.getHours()*60 + d.getMinutes();
+        return mins >= 9*60+15 && mins < 9*60+20;
+      });
+      if (!orbCandles.length) orbCandles = [todayCandles[0]];
+    } else {
+      orbCandles = [todayCandles[0]];
+    }
+    
+    const orbHigh = Math.max(...orbCandles.map(c => c.high));
+    const orbLow  = Math.min(...orbCandles.map(c => c.low));
+    
+    return { high: orbHigh, low: orbLow };
+  };
+
+  // ── Fetch historical candles ──────────────────────────────
   const loadChart = async () => {
     if (!chartSym) return;
     setLoading(true);
     try {
-      const days = ['D','W'].includes(tf) ? 365 : tf==='60' ? 60 : 15;
+      const days = ['D','W'].includes(tf) ? 365 : tf==='60' ? 60 : 10;
       const r = await api.get(
         `/api/stocks/history?symbol=${encodeURIComponent(chartSym)}&resolution=${tf}&days=${days}`
       );
       if (r.success && r.candles?.length > 0) {
         setCandles(r.candles);
-        setLoading(false);
-        return;
+        // Compute ORB from fetched candles
+        const orb = computeORBFromCandles(r.candles);
+        setChartOrb(orb);
+      } else {
+        setCandles([]);
+        setChartOrb({ high:null, low:null });
       }
-      // If history fails (auth expired etc), show message
-      setCandles([]);
     } catch(e) {
       setCandles([]);
+      setChartOrb({ high:null, low:null });
     }
     setLoading(false);
   };
 
   useEffect(()=>{ loadChart(); },[chartSym, tf]);
+  useEffect(()=>{ if(authStatus?.isAuthenticated) loadChart(); },[authStatus?.isAuthenticated]);
 
-  // Auto reload chart when auth becomes available
-  useEffect(()=>{
-    if(authStatus?.isAuthenticated) loadChart();
-  },[authStatus?.isAuthenticated]);
-
-  // Live price ticker — update every second from ticks or REST quote
+  // ── Live price update ─────────────────────────────────────
   useEffect(()=>{
     const tick = ticks[chartSym];
     if (tick?.ltp) { setLivePrice(tick); return; }
-    // Poll REST quote every 3s when market open
     const t = setInterval(async () => {
       try {
         const r = await api.get(`/api/stocks/quote/${encodeURIComponent(chartSym)}`);
@@ -989,22 +1050,26 @@ function LiveChartView({ selectedSymbols, ticks, orbLevels, activeSignals, authS
     return () => clearInterval(t);
   }, [chartSym, ticks]);
 
-  // Update last candle with live tick
+  // ── Update last candle with live tick ─────────────────────
   useEffect(()=>{
     const tick = ticks[chartSym];
     if (!tick?.ltp || candles.length === 0) return;
     setCandles(prev => {
       const updated = [...prev];
       const last = { ...updated[updated.length-1] };
-      last.close  = tick.ltp;
-      last.high   = Math.max(last.high, tick.ltp);
-      last.low    = Math.min(last.low, tick.ltp);
+      last.close = tick.ltp;
+      last.high  = Math.max(last.high, tick.ltp);
+      last.low   = Math.min(last.low,  tick.ltp);
       updated[updated.length-1] = last;
       return updated;
     });
   }, [ticks[chartSym]?.ltp]);
 
-  const orb    = orbLevels[chartSym] || null;
+  // Use chartOrb (from candles) if orbLevels not locked yet
+  const orb = orbLevels[chartSym]?.locked
+    ? orbLevels[chartSym]
+    : chartOrb;
+
   const signal = activeSignals[chartSym] || null;
   const tick   = ticks[chartSym] || null;
 
@@ -1049,7 +1114,8 @@ function LiveChartView({ selectedSymbols, ticks, orbLevels, activeSignals, authS
           { l:'ORB High',   v: orb?.high?.toFixed(2)||'—',     c:G           },
           { l:'ORB Low',    v: orb?.low?.toFixed(2)||'—',      c:R           },
           { l:'Entry',      v: signal?.entry?.toFixed(2)||'—', c:'#6366F1'   },
-          { l:'Status',     v: orb?.locked?'LOCKED':'WAITING', c:orb?.locked?G:T2 },
+          { l:'Status',     v: orbLevels[chartSym]?.locked?'LOCKED':orb?.high?'COMPUTED':'WAITING',
+            c: orbLevels[chartSym]?.locked?G:orb?.high?'#F59E0B':T2 },
         ].map(item=>(
           <div key={item.l} style={{ background:item.c+'10',border:`1px solid ${item.c}25`,
             borderRadius:9,padding:'9px 13px' }}>
@@ -1071,7 +1137,7 @@ function LiveChartView({ selectedSymbols, ticks, orbLevels, activeSignals, authS
         <div style={{ height:'calc(100% - 42px)' }}>
           {candles.length>0
             ? <LiveCandleChart candles={candles} orbHigh={orb?.high} orbLow={orb?.low}
-                tradeInfo={signal} symbol={chartSym} />
+                tradeInfo={signal} symbol={chartSym} firstCandleHighlight={true} />
             : <div style={{ display:'flex',alignItems:'center',justifyContent:'center',
                 height:'100%',color:T2,fontSize:13 }}>
                 {loading?'Loading chart data…':'No candle data yet. Market may not be open.'}
