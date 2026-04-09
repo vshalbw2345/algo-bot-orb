@@ -171,7 +171,7 @@ class ORBEngine extends EventEmitter {
     if (candle.close < orb.low  && candle.high > orb.low)  direction = 'SELL';
     if (!direction) return;
 
-    logger.info(`[ORB] Breakout check: close=${candle.close} high=${candle.high} low=${candle.low} orbHigh=${orb.high} orbLow=${orb.low} → ${direction}`);
+    logger.info(`[ORB] Breakout: close=${candle.close} high=${candle.high} low=${candle.low} orbH=${orb.high} orbL=${orb.low} → ${direction}`);
 
     // ── 7. Calculate entry / SL / Target / Qty ────────────
     const entry    = candle.close;
@@ -179,7 +179,7 @@ class ORBEngine extends EventEmitter {
     const effectiveCap = capital * leverage;
     const riskAmount   = (effectiveCap * riskPct) / 100;
 
-    // SL = ORB opposite side, Target = entry ± (slPoints * rrRatio)
+    // SL = ORB opposite side
     let sl, target, slPoints;
     if (direction === 'BUY') {
       sl       = orb.low;
@@ -191,7 +191,31 @@ class ORBEngine extends EventEmitter {
       target   = entry - slPoints * rrRatio;
     }
 
-    const qty = Math.max(1, Math.floor(riskAmount / slPoints));
+    // ── SAFETY CHECKS ─────────────────────────────────────
+    // 1. SL points must be > 0
+    if (slPoints <= 0) {
+      logger.warn(`[ORB] BLOCKED ${symbol} — Invalid SL points: ${slPoints}`);
+      return;
+    }
+
+    // 2. Minimum SL = 0.3% of entry price (avoid tiny ranges)
+    const minSL = entry * 0.003;
+    if (slPoints < minSL) {
+      logger.warn(`[ORB] BLOCKED ${symbol} — SL too tight: ${slPoints.toFixed(2)} < min ${minSL.toFixed(2)}`);
+      return;
+    }
+
+    // 3. Max qty cap — never more than what ₹5L can buy
+    const maxQty = Math.floor(500000 / entry);
+    const rawQty = Math.floor(riskAmount / slPoints);
+    const qty    = Math.min(rawQty, maxQty, 500); // hard cap at 500 shares
+
+    if (qty <= 0) {
+      logger.warn(`[ORB] BLOCKED ${symbol} — Qty is 0`);
+      return;
+    }
+
+    logger.info(`[ORB] Qty calc: riskAmt=${riskAmount} slPts=${slPoints.toFixed(2)} rawQty=${rawQty} finalQty=${qty}`);
     const signalId = `${symbol}_${direction}_${Date.now()}`;
 
     const signal = {
