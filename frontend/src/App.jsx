@@ -1197,6 +1197,10 @@ function TestSignalView({ authStatus, funds: globalFunds, setFunds: setGlobalFun
     if (authStatus?.isAuthenticated && funds.length === 0) fetchBalance();
   }, [authStatus?.isAuthenticated]);
 
+  const [realRes,  setRealRes]  = useState(null);
+  const [realLoad, setRealLoad] = useState(false);
+
+  // Simulated test — no real order
   const send = async () => {
     setLoad(true);
     try {
@@ -1205,6 +1209,22 @@ function TestSignalView({ authStatus, funds: globalFunds, setFunds: setGlobalFun
       setHist(p=>[r,...p].slice(0,10));
     } catch(e) { setRes({ success:false, error:e.message }); }
     setLoad(false);
+  };
+
+  // REAL order — places actual order at Fyers
+  const sendReal = async () => {
+    if (!window.confirm(`Place REAL ${side} order for ${qty} shares of ${sym}?\nThis will use actual margin!`)) return;
+    setRealLoad(true); setRealRes(null);
+    try {
+      const r = await api.post('/api/orders/place', {
+        symbol: sym, side, qty: parseInt(qty)||1,
+        orderType: ot, price: parseFloat(price)||0,
+        productType: 'INTRADAY'
+      });
+      setRealRes(r);
+      setHist(p=>[{...r, real:true},...p].slice(0,10));
+    } catch(e) { setRealRes({ success:false, error:e.message }); }
+    setRealLoad(false);
   };
 
   // Parse key fund fields
@@ -1337,27 +1357,60 @@ function TestSignalView({ authStatus, funds: globalFunds, setFunds: setGlobalFun
             <Field label="Quantity" value={qty} onChange={setQty} type="number" />
             {ot!=='MARKET' && <Field label="Price ₹" value={price} onChange={setPrice} prefix="₹" type="number"
               placeholder={INDIAN_STOCKS.find(s=>s.symbol===sym)?.price?.toFixed(2)} />}
+            {/* Simulated test */}
             <button onClick={send} disabled={load||!sym||!qty} style={{
-              width:'100%',padding:'11px',borderRadius:9,fontWeight:700,fontSize:14,border:'none',
+              width:'100%',padding:'10px',borderRadius:9,fontWeight:700,fontSize:13,
+              border:`2px solid #8B5CF6`,cursor:'pointer',background:'#F5F3FF',color:'#8B5CF6',
+              display:'flex',alignItems:'center',justifyContent:'center',gap:8,marginBottom:7,
+              opacity:(load||!sym||!qty)?0.6:1 }}>
+              {load?<RefreshCw size={13} style={{ animation:'spin 1s linear infinite' }}/>:<Zap size={13}/>}
+              Test Signal (Simulated — No Real Order)
+            </button>
+            {/* Real order */}
+            <button onClick={sendReal} disabled={realLoad||!sym||!qty||!authStatus?.isAuthenticated} style={{
+              width:'100%',padding:'10px',borderRadius:9,fontWeight:700,fontSize:13,border:'none',
               cursor:'pointer',background:side==='BUY'?G:R,color:'#fff',
               display:'flex',alignItems:'center',justifyContent:'center',gap:8,
-              opacity:(load||!sym||!qty)?0.6:1 }}>
-              {load?<RefreshCw size={14} style={{ animation:'spin 1s linear infinite' }}/>:<Send size={14}/>}
-              Send {side} Signal
+              opacity:(realLoad||!sym||!qty)?0.6:1 }}>
+              {realLoad?<RefreshCw size={13} style={{ animation:'spin 1s linear infinite' }}/>:<Send size={13}/>}
+              {side==='BUY'?'▲':'▼'} Place REAL {side} Order at Fyers
             </button>
+            {!authStatus?.isAuthenticated && (
+              <div style={{ fontSize:11,color:W,textAlign:'center',marginTop:4 }}>
+                Login to Fyers first to place real orders
+              </div>
+            )}
           </SCard>
           {res && (
-            <div style={{ border:`1.5px solid ${res.success?G:R}`,borderRadius:10,padding:'12px 14px',
-              background:res.success?'#F0FDF4':'#FFF1F2' }}>
-              <div style={{ display:'flex',alignItems:'center',gap:7,marginBottom:8 }}>
-                {res.success?<CheckCircle size={16} color={G}/>:<XCircle size={16} color={R}/>}
-                <span style={{ fontWeight:700,color:res.success?G:R }}>
-                  {res.success?'Signal Sent':'Failed'}
-                </span>
-                {res.simulated && <Badge text="SIMULATED" color="#8B5CF6" />}
+            <div style={{ border:`1.5px solid ${'#8B5CF6'}`,borderRadius:10,padding:'12px 14px',
+              background:'#F5F3FF',marginBottom:8 }}>
+              <div style={{ display:'flex',alignItems:'center',gap:7,marginBottom:6 }}>
+                <Zap size={14} color="#8B5CF6"/>
+                <span style={{ fontWeight:700,color:'#8B5CF6' }}>Test Signal Sent</span>
+                <Badge text="SIMULATED" color="#8B5CF6" />
               </div>
-              {res.orderId && <div className="mono" style={{ fontSize:12,color:T2 }}>ID: {res.orderId}</div>}
+              {res.orderId && <div className="mono" style={{ fontSize:11,color:T2 }}>ID: {res.orderId}</div>}
               {res.error && <div style={{ fontSize:12,color:R }}>{res.error}</div>}
+            </div>
+          )}
+          {realRes && (
+            <div style={{ border:`1.5px solid ${realRes.success?G:R}`,borderRadius:10,padding:'12px 14px',
+              background:realRes.success?'#F0FDF4':'#FFF1F2' }}>
+              <div style={{ display:'flex',alignItems:'center',gap:7,marginBottom:6 }}>
+                {realRes.success?<CheckCircle size={16} color={G}/>:<XCircle size={16} color={R}/>}
+                <span style={{ fontWeight:700,color:realRes.success?G:R }}>
+                  {realRes.success?'✅ Real Order Placed at Fyers!':'❌ Order Failed'}
+                </span>
+              </div>
+              {realRes.orderId && (
+                <div className="mono" style={{ fontSize:12,color:T1,fontWeight:700 }}>
+                  Order ID: {realRes.orderId}
+                </div>
+              )}
+              {realRes.error && <div style={{ fontSize:12,color:R,marginTop:4 }}>{realRes.error}</div>}
+              <div style={{ fontSize:11,color:T2,marginTop:4 }}>
+                Check Fyers app → Order Book to confirm
+              </div>
             </div>
           )}
         </div>
@@ -2078,8 +2131,34 @@ export default function App() {
   const handleSaveStocks = async (syms, toggles) => {
     setSelectedSymbols(syms);
     setStockToggles(toggles);
+    // Save to localStorage permanently
+    try { localStorage.setItem('orb_selected_symbols', JSON.stringify(syms)); } catch(_){}
+    try { localStorage.setItem('orb_stock_toggles', JSON.stringify(toggles)); } catch(_){}
     try { await api.post('/api/stocks/select', { symbols:syms, toggles }); } catch(e){}
   };
+
+  // ── On startup: restore stocks from localStorage and push to server ──
+  useEffect(() => {
+    const restoreStocks = async () => {
+      try {
+        const saved = localStorage.getItem('orb_selected_symbols');
+        const savedToggles = localStorage.getItem('orb_stock_toggles');
+        if (saved) {
+          const syms = JSON.parse(saved);
+          const toggles = savedToggles ? JSON.parse(savedToggles) : {};
+          if (syms.length > 0) {
+            setSelectedSymbols(syms);
+            setStockToggles(toggles);
+            // Push to server to ensure subscription
+            await api.post('/api/stocks/select', { symbols:syms, toggles });
+            logger.info && logger.info('Restored ' + syms.length + ' stocks from localStorage');
+          }
+        }
+      } catch(_) {}
+    };
+    // Run after short delay to ensure server is ready
+    setTimeout(restoreStocks, 2000);
+  }, []);
 
   return (
     <div style={{ display:'flex',flexDirection:'column',height:'100vh',fontFamily:"'Outfit',sans-serif" }}>
