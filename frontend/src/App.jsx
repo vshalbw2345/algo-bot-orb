@@ -1219,7 +1219,7 @@ function TestSignalView({ authStatus, funds: globalFunds, setFunds: setGlobalFun
       const r = await api.post('/api/orders/place', {
         symbol: sym, side, qty: parseInt(qty)||1,
         orderType: ot, price: parseFloat(price)||0,
-        productType: 'CNC'
+        productType: 'INTRADAY'
       });
       setRealRes(r);
       setHist(p=>[{...r, real:true},...p].slice(0,10));
