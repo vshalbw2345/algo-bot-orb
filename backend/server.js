@@ -279,6 +279,28 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
+// ── Force reconnect feed ─────────────────────────────────
+app.get('/api/feed/reconnect', (req, res) => {
+  try {
+    if (fyersAuth.isAuthenticated && fyersAuth.accessToken) {
+      fyersData.disconnect();
+      setTimeout(() => {
+        fyersData.init(process.env.FYERS_APP_ID, fyersAuth.accessToken);
+        fyersData.connect();
+        if (selectedSymbols.length > 0) {
+          setTimeout(() => fyersData.subscribe(selectedSymbols), 2000);
+        }
+      }, 1000);
+      logger.info('[SERVER] Feed reconnect triggered via API');
+      res.json({ success: true, message: 'Feed reconnecting...', symbols: selectedSymbols });
+    } else {
+      res.json({ success: false, message: 'Not authenticated' });
+    }
+  } catch(err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
 // ── Health ────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
   res.json({
@@ -445,6 +467,20 @@ scheduler.init({
   feed:     fyersData,
   emitFn:   emit
 });
+
+// ─────────────────────────────────────────────────────────
+// AUTO RECONNECT FEED if it drops (check every 2 minutes)
+// ─────────────────────────────────────────────────────────
+setInterval(() => {
+  if (fyersAuth.isAuthenticated && !fyersData.isConnected) {
+    logger.warn('[SERVER] Feed disconnected — auto reconnecting...');
+    fyersData.init(process.env.FYERS_APP_ID, fyersAuth.accessToken);
+    fyersData.connect();
+    setTimeout(() => {
+      if (selectedSymbols.length > 0) fyersData.subscribe(selectedSymbols);
+    }, 3000);
+  }
+}, 2 * 60 * 1000);
 
 // ─────────────────────────────────────────────────────────
 // LIVE P&L BROADCAST (every 5 seconds)
