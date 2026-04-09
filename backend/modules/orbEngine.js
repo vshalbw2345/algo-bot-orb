@@ -22,6 +22,7 @@ class ORBEngine extends EventEmitter {
     this.candles1M  = {};   // symbol → Candle[]   (1-min OHLCV)
     this.candles5M  = {};   // symbol → Candle[]   (5-min OHLCV)
     this.orbLevels  = {};   // symbol → { high, low, locked, lockedAt }
+    this.orbTracking= {};   // symbol → { high, low } — tracks 9:15-9:20 range live
     this.signals    = {};   // symbol → { direction, entry, sl, target, qty, trailed, id }
 
     // Runtime flags
@@ -47,6 +48,25 @@ class ORBEngine extends EventEmitter {
   onTick(symbol, tick) {
     this._buildCandle('1M', symbol, tick, 1);
     this._buildCandle('5M', symbol, tick, 5);
+    this._trackORBRange(symbol, tick);
+  }
+
+  // ── Track ORB range live from 9:15 to 9:20 ───────────────
+  _trackORBRange(symbol, tick) {
+    if (this.orbLevels[symbol]?.locked) return;
+    const now = new Date();
+    const h = now.getHours(), m = now.getMinutes();
+    // Only track between 9:15 and 9:20
+    const afterOpen  = (h > 9) || (h === 9 && m >= 15);
+    const beforeLock = (h < 9) || (h === 9 && m < 20);
+    if (!afterOpen || !beforeLock) return;
+
+    if (!this.orbTracking[symbol]) {
+      this.orbTracking[symbol] = { high: tick.ltp, low: tick.ltp };
+    } else {
+      this.orbTracking[symbol].high = Math.max(this.orbTracking[symbol].high, tick.ltp);
+      this.orbTracking[symbol].low  = Math.min(this.orbTracking[symbol].low,  tick.ltp);
+    }
   }
 
   // ── Candle builder ────────────────────────────────────────
@@ -103,18 +123,22 @@ class ORBEngine extends EventEmitter {
     const now = new Date();
     const h = now.getHours(), m = now.getMinutes();
 
-    // ── 1. Lock ORB after 9:20 AM first candle close ──────
+    // ── 1. Lock ORB after 9:20 AM ────────────────────────
     if (!this.orbLevels[symbol]?.locked) {
       const afterORB = (h > this.ORB_END_H) || (h === this.ORB_END_H && m >= this.ORB_END_M);
       if (afterORB) {
+        // Use tracked range (9:15-9:20) if available, else use candle
+        const tracked = this.orbTracking[symbol];
+        const orbHigh = tracked ? tracked.high : candle.high;
+        const orbLow  = tracked ? tracked.low  : candle.low;
         this.orbLevels[symbol] = {
-          high:     candle.high,
-          low:      candle.low,
+          high:     orbHigh,
+          low:      orbLow,
           locked:   true,
           lockedAt: new Date()
         };
-        logger.info(`[ORB] ${symbol} → ORB locked. High: ${candle.high} | Low: ${candle.low}`);
-        this.emit('orbLocked', { symbol, high: candle.high, low: candle.low, candle });
+        logger.info(`[ORB] ${symbol} → ORB locked. High: ${orbHigh} | Low: ${orbLow} (tracked: ${!!tracked})`);
+        this.emit('orbLocked', { symbol, high: orbHigh, low: orbLow, candle });
         return;
       }
     }
@@ -298,6 +322,7 @@ class ORBEngine extends EventEmitter {
     this.candles1M    = {};
     this.candles5M    = {};
     this.orbLevels    = {};
+    this.orbTracking  = {};
     this.signals      = {};
     this.slHitsToday  = {};
     this.tgtHitsToday = {};
