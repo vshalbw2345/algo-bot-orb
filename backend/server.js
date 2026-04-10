@@ -355,15 +355,14 @@ app.post('/api/webhook', async (req, res) => {
     }
 
     // Place order
-    const order = await orderExecutor.placeOrder({
-      symbol,
-      qty:       parseInt(qty),
-      side:      action === 'BUY' ? 1 : -1,
-      type:      orderType === 'LIMIT' ? 2 : 2, // 2=MARKET, 1=LIMIT
-      limitPrice: parseFloat(price),
+  const order = await orderExecutor.placeOrder({
+    symbol,
+      qty:         parseInt(qty),
+      side:        action,          // pass 'BUY' or 'SELL' directly
+      orderType:   'MARKET',
+      price:       parseFloat(price) || 0,
       productType: 'INTRADAY'
     });
-
     logger.info('[WEBHOOK] Order placed:', JSON.stringify(order));
 
     _addAlert({
