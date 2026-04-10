@@ -330,7 +330,59 @@ app.post('/api/control/stock-toggle', (req, res) => {
   emit('stockToggle', { symbol, enabled });
   res.json({ success: true, symbol, enabled });
 });
+// ── Webhook (TradingView / Manual) ────────────────────────
+app.post('/api/webhook', async (req, res) => {
+  try {
+    const body = req.body;
+    logger.info('[WEBHOOK] Received:', JSON.stringify(body));
 
+    const symbol   = body.symbol;   // e.g. "NSE:SBIN-EQ"
+    const action   = body.action;   // "BUY" or "SELL"
+    const qty      = body.qty || 1;
+    const price    = body.price || 0;
+    const orderType = body.orderType || 'MARKET'; // MARKET or LIMIT
+
+    if (!symbol || !action) {
+      return res.status(400).json({ success: false, error: 'symbol and action required' });
+    }
+
+    if (!fyersAuth.isAuthenticated) {
+      return res.status(401).json({ success: false, error: 'Not authenticated with Fyers' });
+    }
+
+    if (!masterEnabled) {
+      return res.status(403).json({ success: false, error: 'Master switch is OFF' });
+    }
+
+    // Place order
+    const order = await orderExecutor.placeOrder({
+      symbol,
+      qty:       parseInt(qty),
+      side:      action === 'BUY' ? 1 : -1,
+      type:      orderType === 'LIMIT' ? 2 : 2, // 2=MARKET, 1=LIMIT
+      limitPrice: parseFloat(price),
+      productType: 'INTRADAY'
+    });
+
+    logger.info('[WEBHOOK] Order placed:', JSON.stringify(order));
+
+    _addAlert({
+      ts:      new Date().toISOString(),
+      symbol,
+      action,
+      qty,
+      status:  'PLACED',
+      orderId: order?.id || order?.order_id || '-'
+    });
+
+    emit('orderPlaced', { symbol, action, qty, order });
+    res.json({ success: true, order });
+
+  } catch (err) {
+    logger.error('[WEBHOOK] Error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 // ── Alerts ────────────────────────────────────────────────
 app.get('/api/alerts', (req, res) => {
   res.json({ success: true, alerts: alertLog.slice(-100) });
