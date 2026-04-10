@@ -243,10 +243,19 @@ app.get('/api/portfolio/funds', async (req, res) => {
   try {
     const axios = require('axios');
     // Use direct axios call — more reliable than fyers-api-v3 object
-    const r = await axios.get('https://api-t1.fyers.in/api/v3/funds', {
-      headers: { Authorization: `${fyersAuth.appId}:${fyersAuth.accessToken}` },
-      timeout: 10000
-    });
+    // Try multiple endpoints
+    let r;
+    try {
+      r = await axios.get('https://api-t1.fyers.in/api/v3/funds', {
+        headers: { Authorization: `${fyersAuth.appId}:${fyersAuth.accessToken}` },
+        timeout: 10000
+      });
+    } catch(e) {
+      r = await axios.get('https://api-t2.fyers.in/api/v3/funds', {
+        headers: { Authorization: `${fyersAuth.appId}:${fyersAuth.accessToken}` },
+        timeout: 10000
+      });
+    }
     const data = r.data;
     const funds = data.fund_limit || [];
 
@@ -304,17 +313,38 @@ app.post('/api/orders/place', async (req, res) => {
       takeProfit:  0
     };
 
-    const r = await axios.post('https://api-t1.fyers.in/api/v3/orders/sync', payload, {
-      headers: { Authorization: `${fyersAuth.appId}:${fyersAuth.accessToken}` },
-      timeout: 10000
-    });
+    const headers = { Authorization: `${fyersAuth.appId}:${fyersAuth.accessToken}` };
+    const timeout = 10000;
 
-    const data = r.data;
-    if (data.s === 'ok' || data.code === 200) {
-      logger.info(`[ORDER] ✅ Direct order placed: ${data.id}`);
-      return res.json({ success: true, orderId: data.id, order: { ...payload, orderId: data.id, status: 'PENDING' } });
+    // Try all known Fyers API v3 order endpoints
+    const endpoints = [
+      'https://api-t1.fyers.in/api/v3/orders/sync',
+      'https://api-t2.fyers.in/api/v3/orders/sync',
+      'https://api.fyers.in/api/v3/orders/sync',
+      'https://api-t1.fyers.in/api/v3/orders',
+    ];
+
+    let data = null;
+    let lastError = null;
+
+    for (const url of endpoints) {
+      try {
+        logger.info(`[ORDER] Trying endpoint: ${url}`);
+        const r = await axios.post(url, payload, { headers, timeout });
+        data = r.data;
+        if (data.s === 'ok' || data.code === 200) {
+          logger.info(`[ORDER] ✅ Order placed via ${url}: ${data.id}`);
+          return res.json({ success: true, orderId: data.id, order: { ...payload, orderId: data.id, status: 'PENDING' } });
+        }
+        lastError = data.message || JSON.stringify(data);
+        break; // Got response but not ok — don't try other endpoints
+      } catch (urlErr) {
+        lastError = urlErr.message;
+        if (urlErr.response?.status === 404) continue; // Try next endpoint
+        break; // Other error — stop trying
+      }
     }
-    throw new Error(data.message || JSON.stringify(data));
+    throw new Error(lastError || 'All endpoints failed');
   } catch (err) {
     logger.error('[ORDER] Direct order failed:', err.message);
     // Fallback to orderExecutor
