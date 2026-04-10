@@ -606,14 +606,15 @@ function AlertItem({ alert }) {
 // SIDEBAR
 // ─────────────────────────────────────────────────────────
 const NAV = [
-  { id:'dashboard', label:'Dashboard',        icon:LayoutDashboard },
-  { id:'api',       label:'API Credentials',  icon:Key },
-  { id:'chart',     label:'Live Chart',        icon:Monitor },
-  { id:'stocks',    label:'Stock Selection',   icon:List },
-  { id:'test',      label:'Test Signal',       icon:Zap },
-  { id:'simulator', label:'ORB Simulator',     icon:Activity, badge:'SIM' },
-  { id:'rr',        label:'Risk & Reward',     icon:Calculator },
-  { id:'syntax',    label:'Syntax Generator',  icon:Code2 },
+  { id:'morning',   label:'Morning Check',     icon:CheckCircle, badge:'GO' },
+  { id:'dashboard', label:'Dashboard',          icon:LayoutDashboard },
+  { id:'api',       label:'API Credentials',    icon:Key },
+  { id:'chart',     label:'Live Chart',          icon:Monitor },
+  { id:'stocks',    label:'Stock Selection',     icon:List },
+  { id:'test',      label:'Test Signal',         icon:Zap },
+  { id:'simulator', label:'ORB Simulator',       icon:Activity, badge:'SIM' },
+  { id:'rr',        label:'Risk & Reward',       icon:Calculator },
+  { id:'syntax',    label:'Syntax Generator',    icon:Code2 },
 ];
 
 function Sidebar({ active, setActive, socketOk, authOk, masterOn }) {
@@ -716,20 +717,23 @@ function DashboardView({ masterOn, setMasterOn, selectedSymbols, ticks, orbLevel
         </div>
       </div>
 
-      {/* Stats — use rrConfig for capital (linked to broker balance) */}
+      {/* Stats — balance always from funds global state */}
       {(()=>{
-        const cap = rrConfig?.capital || 50000;
+        // Read balance from rrConfig.capital (set by loadBalance on login)
+        let liveBal = rrConfig?.capital || 0;
+
+        const cap = liveBal > 0 ? liveBal : (rrConfig?.capital || 50000);
         const lev = rrConfig?.leverage || 5;
         const rsk = rrConfig?.riskPct || 2;
-        const rr  = rrConfig?.rrRatio || 2;
         const msl = rrConfig?.maxSLPerDay || 3;
         const ec  = cap * lev;
         const rpt = (ec * rsk) / 100;
         const dll = rpt * msl;
+        const balSrc = liveBal > 0 ? '● Live from Fyers' : 'Default (login to sync)';
         return (
           <div style={{ display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,marginBottom:18 }}>
             <StatCard label="Effective Capital" value={fmtINR(ec)}
-              sub={`₹${cap.toLocaleString('en-IN')} × ${lev}x leverage`} icon={Shield} color={SB} />
+              sub={balSrc} icon={Shield} color={liveBal>0?G:SB} />
             <StatCard label="Live P&L" value={(totalPnl>=0?'+':'')+fmtINR(totalPnl)}
               sub={totalPnl>=0?'▲ Profitable':'▼ In loss'} icon={Activity} color={totalPnl>=0?G:R} />
             <StatCard label="Active Trades" value={`${Object.keys(activeSignals).length}/10`}
@@ -1691,6 +1695,173 @@ function RiskRewardView({ rrConfig, setRrConfig, selectedSymbols, ticks, authSta
   );
 }
 
+// ── Morning Check View ───────────────────────────────────
+function MorningCheckView({ authStatus, selectedSymbols, ticks, orbLevels, riskStatus, rrConfig, masterOn, socketConnected }) {
+  const [checks, setChecks] = useState([]);
+  const [running, setRunning] = useState(false);
+  const [orbData, setOrbData] = useState(null);
+  const [health, setHealth] = useState(null);
+
+  const runChecks = async () => {
+    setRunning(true);
+    const results = [];
+
+    // 1. Server connection
+    try {
+      const h = await api.get('/api/health');
+      setHealth(h);
+      results.push({ label:'Server Online', ok: h.status==='ok', val: h.status==='ok'?'✓ Running':'✗ Offline' });
+      results.push({ label:'Fyers Auth', ok: h.auth, val: h.auth?'✓ Token Valid':'✗ Not Logged In', action: !h.auth?'Login to Fyers':null });
+      results.push({ label:'Live Feed', ok: h.dataFeed, val: h.dataFeed?'✓ Connected':'✗ Disconnected', action: !h.dataFeed?'api/feed/reconnect':null });
+      results.push({ label:'Stocks Subscribed', ok: h.subscribedStocks>0, val: `${h.subscribedStocks} stocks`, action: h.subscribedStocks===0?'Go to Stock Selection':null });
+    } catch(e) {
+      results.push({ label:'Server Online', ok:false, val:'✗ Cannot reach server' });
+    }
+
+    // 2. ORB levels
+    try {
+      const o = await api.get('/api/stocks/orb');
+      setOrbData(o.levels);
+      const lockedCount = Object.values(o.levels||{}).filter(v=>v?.locked).length;
+      const totalStocks = Object.keys(o.levels||{}).length;
+      results.push({ label:'ORB Levels Locked', ok: lockedCount>0, val: `${lockedCount}/${totalStocks} locked`, action: lockedCount===0?'Save stocks to fetch ORB':null });
+    } catch(e) {
+      results.push({ label:'ORB Levels', ok:false, val:'Could not fetch' });
+    }
+
+    // 3. Capital configured
+    const cap = rrConfig?.capital||0;
+    results.push({ label:'Capital Set', ok: cap>1000, val: cap>1000?`₹${cap.toLocaleString('en-IN')} ready`:'Too low — sync balance', action: cap<=1000?'Go to Risk & Reward':null });
+
+    // 4. Master toggle
+    results.push({ label:'Master Toggle', ok: masterOn, val: masterOn?'✓ Bot Active':'✗ Toggle is OFF', action: !masterOn?'Turn ON from Dashboard':null });
+
+    // 5. Market hours
+    const now = new Date();
+    const h2 = now.getHours(), m = now.getMinutes();
+    const isMarket = (h2>9||(h2===9&&m>=15)) && (h2<15||(h2===15&&m<=25));
+    results.push({ label:'Market Hours', ok: isMarket, val: isMarket?'✓ Market Open':'Market Closed (9:15-15:25)' });
+
+    setChecks(results);
+    setRunning(false);
+  };
+
+  const allGreen = checks.length>0 && checks.every(c=>c.ok);
+  const redCount = checks.filter(c=>!c.ok).length;
+
+  return (
+    <div style={{ padding:'22px', height:'100%', overflowY:'auto' }}>
+      <div style={{ display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16 }}>
+        <div>
+          <h2 style={{ fontSize:19,fontWeight:800,color:SB,marginBottom:4 }}>🌅 Morning Checklist</h2>
+          <p style={{ fontSize:13,color:T2 }}>Run this every morning at 9:00 AM before trading</p>
+        </div>
+        <button onClick={runChecks} disabled={running} style={{
+          padding:'10px 22px',borderRadius:9,border:'none',
+          background:running?T2:SB,color:'#fff',fontWeight:700,fontSize:14,cursor:'pointer',
+          display:'flex',alignItems:'center',gap:8 }}>
+          {running
+            ? <><RefreshCw size={14} style={{animation:'spin 1s linear infinite'}}/> Checking...</>
+            : <><CheckCircle size={14}/> Run All Checks</>}
+        </button>
+      </div>
+
+      {/* Overall status */}
+      {checks.length > 0 && (
+        <div style={{ background: allGreen?'#F0FDF4':redCount>2?'#FFF1F2':'#FFF7ED',
+          border:`2px solid ${allGreen?G:redCount>2?R:W}`,
+          borderRadius:12,padding:'14px 18px',marginBottom:18,
+          display:'flex',alignItems:'center',gap:12 }}>
+          <div style={{ fontSize:32 }}>{allGreen?'🟢':redCount>2?'🔴':'🟡'}</div>
+          <div>
+            <div style={{ fontWeight:800,fontSize:16,color:allGreen?G:redCount>2?R:W }}>
+              {allGreen?'ALL SYSTEMS GO — Safe to trade!':redCount>2?`${redCount} ISSUES — Fix before trading`:`${redCount} WARNINGS — Check items below`}
+            </div>
+            <div style={{ fontSize:12,color:T2,marginTop:2 }}>
+              {checks.filter(c=>c.ok).length}/{checks.length} checks passed
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Check items */}
+      <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:18 }}>
+        {checks.map((check,i) => (
+          <div key={i} style={{ background:'#fff',border:`1.5px solid ${check.ok?G+'50':R+'50'}`,
+            borderRadius:10,padding:'12px 16px',
+            display:'flex',alignItems:'center',justifyContent:'space-between' }}>
+            <div>
+              <div style={{ display:'flex',alignItems:'center',gap:7,marginBottom:3 }}>
+                <div style={{ width:8,height:8,borderRadius:'50%',background:check.ok?G:R,flexShrink:0 }}/>
+                <span style={{ fontWeight:700,fontSize:13,color:T1 }}>{check.label}</span>
+              </div>
+              <div style={{ fontSize:12,color:check.ok?G:R,marginLeft:15 }}>{check.val}</div>
+              {check.action && (
+                <div style={{ fontSize:11,color:W,marginLeft:15,marginTop:3 }}>
+                  → {check.action}
+                </div>
+              )}
+            </div>
+            <div style={{ fontSize:20 }}>{check.ok?'✅':'❌'}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* ORB levels table */}
+      {orbData && Object.keys(orbData).length > 0 && (
+        <div style={{ background:'#fff',border:`1.5px solid ${BD}`,borderRadius:12,overflow:'hidden',marginBottom:16 }}>
+          <div style={{ padding:'10px 16px',background:'#FAFBFF',borderBottom:`1px solid ${BD}`,fontWeight:700,fontSize:13,color:T1 }}>
+            📊 ORB Levels Status
+          </div>
+          <div style={{ display:'grid',gridTemplateColumns:'2fr 1fr 1fr 1fr',
+            background:'#F8FAFC',padding:'7px 16px',borderBottom:`1px solid ${BD}` }}>
+            {['Symbol','ORB High','ORB Low','Status'].map(h=>(
+              <span key={h} style={{ fontSize:11,fontWeight:700,color:T2 }}>{h}</span>
+            ))}
+          </div>
+          {Object.entries(orbData).map(([sym,orb],i)=>(
+            <div key={i} style={{ display:'grid',gridTemplateColumns:'2fr 1fr 1fr 1fr',
+              padding:'8px 16px',borderBottom:`1px solid ${BD}`,background:i%2===0?'#fff':'#FAFBFF' }}>
+              <span style={{ fontWeight:700,fontSize:12 }}>{sym.replace('NSE:','').replace('-EQ','')}</span>
+              <span className="mono" style={{ fontSize:12,color:G }}>{orb?.high?`₹${orb.high}`:'—'}</span>
+              <span className="mono" style={{ fontSize:12,color:R }}>{orb?.low?`₹${orb.low}`:'—'}</span>
+              <span style={{ fontSize:11,fontWeight:700,color:orb?.locked?G:W }}>
+                {orb?.locked?'🔒 LOCKED':'⏳ WAITING'}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Quick action buttons */}
+      <div style={{ marginTop:8 }}>
+        <div style={{ fontWeight:700,fontSize:13,color:T1,marginBottom:10 }}>Quick Actions</div>
+        <div style={{ display:'flex',gap:9,flexWrap:'wrap' }}>
+          {[
+            { label:'🔑 Login Fyers', action: ()=>api.get('/api/auth/url').then(r=>window.open(r.url,'_blank')) },
+            { label:'📡 Reconnect Feed', action: ()=>api.get('/api/feed/reconnect').then(()=>alert('Feed reconnecting...')) },
+            { label:'🔄 Run Checks Again', action: runChecks },
+          ].map((btn,i)=>(
+            <button key={i} onClick={btn.action} style={{
+              padding:'9px 16px',borderRadius:8,border:`1.5px solid ${SB}`,
+              background:'#EEF2FF',color:SB,fontWeight:600,fontSize:13,cursor:'pointer' }}>
+              {btn.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {checks.length === 0 && (
+        <div style={{ textAlign:'center',padding:'40px 0',color:T2 }}>
+          <div style={{ fontSize:48,marginBottom:12 }}>🌅</div>
+          <div style={{ fontSize:15,fontWeight:600 }}>Click "Run All Checks" to verify system status</div>
+          <div style={{ fontSize:13,marginTop:6 }}>Run this every morning at 9:00 AM before trading</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── ORB Simulator View ───────────────────────────────────
 // Test entry/exit logic WITHOUT real market hours or broker
 function ORBSimulatorView({ rrConfig, alerts, setAlerts }) {
@@ -2042,30 +2213,24 @@ export default function App() {
   const loadBalance = useCallback(async () => {
     try {
       const fr = await api.get('/api/portfolio/funds');
-      if (fr.success) {
-        if (fr.funds?.length > 0) setFunds(fr.funds);
-        // Backend now computes availableBalance — use it directly
-        const bal = fr.availableBalance || 0;
-        if (bal > 0) {
+      if (fr.success && fr.funds?.length > 0) {
+        setFunds(fr.funds);
+        // Use backend-computed availableBalance (most reliable)
+        const bal = parseFloat(fr.availableBalance || 0);
+        if (bal > 100) {
           setRrConfig(p => ({ ...p, capital: Math.floor(bal) }));
           return Math.floor(bal);
         }
-        // Final fallback: brute-force scan all fund fields
-        if (fr.funds?.length > 0) {
-          let best = 0;
-          for (const f of fr.funds) {
-            for (const key of Object.keys(f)) {
-              const v = parseFloat(f[key]);
-              if (!isNaN(v) && v > 100) best = Math.max(best, v);
-            }
-          }
-          if (best > 0) {
-            setRrConfig(p => ({ ...p, capital: Math.floor(best) }));
-            return Math.floor(best);
+        // Fallback: find equityAmount in any fund entry
+        for (const f of fr.funds) {
+          const v = parseFloat(f.equityAmount ?? f.equity_amount ?? f.value ?? 0);
+          if (v > 100) {
+            setRrConfig(p => ({ ...p, capital: Math.floor(v) }));
+            return Math.floor(v);
           }
         }
       }
-    } catch(_) {}
+    } catch(e) { console.error('Balance error:', e); }
     return 0;
   }, []);
 
@@ -2323,6 +2488,11 @@ export default function App() {
             <RiskRewardView rrConfig={rrConfig} setRrConfig={setRrConfig}
               selectedSymbols={selectedSymbols} ticks={ticks} authStatus={authStatus}
               funds={funds} setFunds={setFunds} />
+          )}
+          {activeView==='morning' && (
+            <MorningCheckView authStatus={authStatus} selectedSymbols={selectedSymbols}
+              ticks={ticks} orbLevels={orbLevels} riskStatus={riskStatus}
+              rrConfig={rrConfig} masterOn={masterOn} socketConnected={socketConnected} />
           )}
           {activeView==='simulator' && (
             <ORBSimulatorView rrConfig={rrConfig} alerts={alerts} setAlerts={setAlerts} />

@@ -28,6 +28,11 @@ class FyersAuth {
 
   async validateAuthCode(authCode) {
     try {
+      // Route through static IP proxy if configured
+      if (process.env.FIXIE_URL) {
+        process.env.https_proxy = process.env.FIXIE_URL;
+        process.env.http_proxy  = process.env.FIXIE_URL;
+      }
       const fyers = new fyersModel({ enableLogging: false });
       fyers.setAppId(this.appId);
       fyers.setRedirectUrl(this.redirectUri);
@@ -111,6 +116,11 @@ class FyersAuth {
 
   getHeaders() {
     if (!this.accessToken) throw new Error('Not authenticated');
+    // Ensure proxy is set for all outbound requests
+    if (process.env.FIXIE_URL) {
+      process.env.https_proxy = process.env.FIXIE_URL;
+      process.env.http_proxy  = process.env.FIXIE_URL;
+    }
     return { Authorization: this.appId + ':' + this.accessToken };
   }
 
