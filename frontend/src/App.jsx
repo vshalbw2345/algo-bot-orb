@@ -856,83 +856,141 @@ function DashboardView({ masterOn, setMasterOn, selectedSymbols, ticks, orbLevel
 // ─────────────────────────────────────────────────────────
 const BROKERS = {
   indian: [
-    { id:'fyers',    name:'Fyers',          color:'#6366F1', fields:['App ID','Secret Key','Redirect URL','Access Token','Client ID'] },
-    { id:'dhan',     name:'Dhan',           color:'#0EA5E9', fields:['Client ID','Access Token','Partner ID','Partner Name','API Key'] },
-    { id:'angelone', name:'AngelOne',       color:'#F59E0B', fields:['API Key','Secret Key','Client Code','PIN','TOTP Key'] },
-    { id:'upstox',   name:'Upstox',         color:'#10B981', fields:['API Key','Secret Key','Redirect URI','Access Token','User ID'] },
+    { id:'fyers',    name:'Fyers',          color:'#6366F1',
+      fields:['App ID','Secret Key','Client ID','Redirect URL'],
+      autoToken:true,   // supports OAuth auto-token
+      tokenField:'Access Token' },
+    { id:'dhan',     name:'Dhan',           color:'#0EA5E9',
+      fields:['Client ID','Access Token','Partner ID','Partner Name','API Key'] },
+    { id:'angelone', name:'AngelOne',       color:'#F59E0B',
+      fields:['API Key','Secret Key','Client Code','PIN','TOTP Key'] },
+    { id:'upstox',   name:'Upstox',         color:'#10B981',
+      fields:['API Key','Secret Key','Redirect URI','User ID'],
+      autoToken:true, tokenField:'Access Token' },
   ],
   crypto: [
-    { id:'delta',    name:'Delta Exchange', color:'#8B5CF6', fields:['API Key','API Secret','Client ID','Testnet Key','Testnet Secret'], alwaysOn:true },
+    { id:'delta', name:'Delta Exchange', color:'#8B5CF6',
+      fields:['API Key','API Secret','Client ID','Testnet Key','Testnet Secret'],
+      alwaysOn:true },
   ]
 };
 
 // ── API Credentials View ──────────────────────────────────
 function ApiCredView({ authStatus }) {
-  // Fyers OAuth state
   const [loading,  setLoading]  = useState(false);
   const [msg,      setMsg]      = useState(null);
   const [token,    setToken]    = useState('');
   const [showS,    setShowS]    = useState(false);
 
-  // Multi-broker state — persisted in localStorage
+  // Multi-broker APIs — persisted in localStorage
   const [apis, setApis] = useState(() => {
     try { return JSON.parse(localStorage.getItem('orb_apis') || '[]'); } catch(_) { return []; }
   });
 
   // Modal state
-  const [showModal,    setShowModal]    = useState(false);
-  const [modalStep,    setModalStep]    = useState(1); // 1=category, 2=broker, 3=form
-  const [selCategory,  setSelCategory]  = useState(null);
-  const [selBroker,    setSelBroker]    = useState(null);
-  const [formData,     setFormData]     = useState({});
-  const [apiName,      setApiName]      = useState('');
+  const [showModal,   setShowModal]   = useState(false);
+  const [modalStep,   setModalStep]   = useState(1);
+  const [selCategory, setSelCategory] = useState(null);
+  const [selBroker,   setSelBroker]   = useState(null);
+  const [formData,    setFormData]    = useState({});
+  const [apiName,     setApiName]     = useState('');
+  const [showPwd,     setShowPwd]     = useState({});
+
+  // Edit modal state
+  const [editApi,     setEditApi]     = useState(null);
+  const [editData,    setEditData]    = useState({});
+  const [editName,    setEditName]    = useState('');
+
+  // Connect status per api
+  const [connStatus, setConnStatus]  = useState({});
 
   const saveApis = (updated) => {
     setApis(updated);
     localStorage.setItem('orb_apis', JSON.stringify(updated));
   };
 
-  const openModal = () => { setShowModal(true); setModalStep(1); setSelCategory(null); setSelBroker(null); setFormData({}); setApiName(''); };
-  const closeModal = () => setShowModal(false);
-
-  const selectCategory = (cat) => { setSelCategory(cat); setModalStep(2); };
-  const selectBroker   = (b)   => { setSelBroker(b); setModalStep(3); setApiName(b.name + ' API ' + (apis.filter(a=>a.brokerId===b.id).length+1)); };
+  // ── Add flow ──────────────────────────────────────────────
+  const openModal = () => {
+    setShowModal(true); setModalStep(1);
+    setSelCategory(null); setSelBroker(null);
+    setFormData({}); setApiName(''); setShowPwd({});
+  };
+  const closeModal  = () => setShowModal(false);
+  const selCat      = (c) => { setSelCategory(c); setModalStep(2); };
+  const selBrok     = (b) => {
+    setSelBroker(b); setModalStep(3);
+    setApiName(b.name + ' API ' + (apis.filter(a=>a.brokerId===b.id).length+1));
+  };
 
   const addApi = () => {
     if (!selBroker) return;
     const newApi = {
-      id:       Date.now(),
-      brokerId: selBroker.id,
-      name:     apiName || selBroker.name,
-      category: selCategory,
-      color:    selBroker.color,
-      fields:   formData,
-      enabled:  true,
-      alwaysOn: selBroker.alwaysOn || false,
-      addedAt:  new Date().toISOString()
+      id: Date.now(), brokerId: selBroker.id, name: apiName||selBroker.name,
+      category: selCategory, color: selBroker.color,
+      fields: formData, enabled: true,
+      alwaysOn: selBroker.alwaysOn||false,
+      connected: false, addedAt: new Date().toISOString()
     };
     saveApis([...apis, newApi]);
     closeModal();
-    setMsg({ type:'success', text: `${selBroker.name} API added successfully` });
+    setMsg({ type:'success', text: selBroker.name + ' API added!' });
   };
 
-  const toggleApi  = (id) => saveApis(apis.map(a => a.id===id ? {...a, enabled:!a.enabled} : a));
-  const deleteApi  = (id) => { if(window.confirm('Delete this API?')) saveApis(apis.filter(a=>a.id!==id)); };
+  // ── Edit flow ─────────────────────────────────────────────
+  const openEdit = (a) => {
+    setEditApi(a); setEditData({...a.fields}); setEditName(a.name);
+  };
+  const closeEdit = () => setEditApi(null);
+  const saveEdit  = () => {
+    saveApis(apis.map(a => a.id===editApi.id
+      ? { ...a, name: editName, fields: editData } : a));
+    closeEdit();
+    setMsg({ type:'success', text: 'API updated' });
+  };
 
-  // Fyers OAuth
+  // ── Toggle / Delete ───────────────────────────────────────
+  const toggleApi = (id) => saveApis(apis.map(a => a.id===id ? {...a, enabled:!a.enabled} : a));
+  const deleteApi = (id) => {
+    if (window.confirm('Delete this API? This cannot be undone.'))
+      saveApis(apis.filter(a => a.id!==id));
+  };
+
+  // ── Connect — auto-fetch token via OAuth ─────────────────
+  const connectApi = async (a) => {
+    setConnStatus(p => ({...p, [a.id]: 'connecting'}));
+    try {
+      if (a.brokerId === 'fyers') {
+        // For Fyers — use the existing OAuth flow
+        const r = await api.get('/api/auth/url');
+        window.open(r.url, '_blank');
+        setMsg({ type:'info', text: 'Fyers login opened. After login, token auto-saves.' });
+        // Mark as connected after short delay (token saves via callback)
+        setTimeout(() => {
+          setConnStatus(p => ({...p, [a.id]: 'connected'}));
+          saveApis(apis.map(x => x.id===a.id ? {...x, connected:true} : x));
+        }, 5000);
+      } else {
+        setMsg({ type:'info', text: a.name + ' — paste access token in the edit form manually.' });
+        setConnStatus(p => ({...p, [a.id]: 'idle'}));
+      }
+    } catch(e) {
+      setConnStatus(p => ({...p, [a.id]: 'error'}));
+      setMsg({ type:'error', text: e.message });
+    }
+  };
+
+  // ── Fyers active connection ───────────────────────────────
   const handleGetUrl = async () => {
     setLoading(true);
     try {
       const r = await api.get('/api/auth/url');
       window.open(r.url, '_blank');
-      setMsg({ type:'info', text:'Fyers login opened. After login token auto-saves.' });
+      setMsg({ type:'info', text: 'Fyers login opened. After login token auto-saves.' });
     } catch(e) { setMsg({ type:'error', text: e.message }); }
     setLoading(false);
   };
-
   const handleManualToken = async () => {
-    if (!token) return;
-    setLoading(true);
+    if (!token) return; setLoading(true);
     try {
       const r = await api.post('/api/auth/token', { token });
       setMsg({ type:'success', text: r.message });
@@ -942,21 +1000,33 @@ function ApiCredView({ authStatus }) {
 
   const brokerList = selCategory ? BROKERS[selCategory] : [];
 
+  const connIcon = (apiId, connected) => {
+    const st = connStatus[apiId];
+    if (st === 'connecting') return '⏳';
+    if (st === 'connected' || connected) return '🟢';
+    if (st === 'error') return '🔴';
+    return '⚫';
+  };
+
+  const getBrokerDef = (brokerId) =>
+    [...BROKERS.indian, ...BROKERS.crypto].find(b => b.id===brokerId);
+
   return (
     <div style={{ padding:'22px', height:'100%', overflowY:'auto' }}>
       {/* Header */}
-      <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4 }}>
+      <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16 }}>
         <div>
           <h2 style={{ fontSize:19,fontWeight:800,color:SB,margin:0 }}>API Credentials</h2>
           <p style={{ fontSize:13,color:T2,marginTop:2 }}>Manage broker connections for live trading</p>
         </div>
-        <button onClick={openModal} style={{ display:'flex',alignItems:'center',gap:7,padding:'9px 18px',
-          borderRadius:9,border:'none',background:SB,color:'#fff',fontWeight:700,fontSize:13,cursor:'pointer' }}>
+        <button onClick={openModal} style={{ display:'flex',alignItems:'center',gap:7,
+          padding:'9px 18px',borderRadius:9,border:'none',background:SB,color:'#fff',
+          fontWeight:700,fontSize:13,cursor:'pointer' }}>
           <span style={{ fontSize:18,lineHeight:1 }}>+</span> ADD API
         </button>
       </div>
 
-      {/* Fyers Active Connection */}
+      {/* Active Bot Connection (Fyers) */}
       <SCard title="Active Bot Connection (Fyers)" icon={Wifi}>
         <div style={{ display:'flex',alignItems:'center',gap:10,padding:'10px 14px',borderRadius:9,
           background:authStatus?.isAuthenticated?'#F0FDF4':'#FFF7ED',
@@ -967,16 +1037,18 @@ function ApiCredView({ authStatus }) {
               {authStatus?.isAuthenticated ? '✓ Fyers Connected' : '✗ Not Connected'}
             </div>
             {authStatus?.profile && <div style={{ fontSize:11,color:T2 }}>{authStatus.profile.name} · {authStatus.profile.email}</div>}
+            {authStatus?.expiresAt && <div style={{ fontSize:10,color:T2 }}>Expires: {new Date(authStatus.expiresAt).toLocaleTimeString('en-IN')}</div>}
           </div>
           <button onClick={handleGetUrl} disabled={loading} style={{ padding:'6px 14px',borderRadius:7,
-            border:`1px solid ${SB}`,background:SB,color:'#fff',fontWeight:600,fontSize:12,cursor:'pointer' }}>
-            {loading ? '...' : 'Login'}
+            border:'none',background:SB,color:'#fff',fontWeight:600,fontSize:12,cursor:'pointer' }}>
+            {loading?'...':'Login to Fyers'}
           </button>
         </div>
+        <div style={{ fontSize:11,color:T2,marginBottom:6,fontWeight:600 }}>Or paste access token manually:</div>
         <div style={{ display:'flex',gap:8 }}>
           <div style={{ flex:1,display:'flex',alignItems:'center',border:`1.5px solid ${BD}`,borderRadius:8,overflow:'hidden' }}>
             <input type={showS?'text':'password'} value={token} onChange={e=>setToken(e.target.value)}
-              placeholder="Or paste access token manually…"
+              placeholder="Paste Fyers access token…"
               style={{ flex:1,padding:'8px 12px',border:'none',background:'transparent',fontSize:12,color:T1 }} />
             <button onClick={()=>setShowS(p=>!p)} style={{ padding:'0 10px',border:'none',background:'transparent',cursor:'pointer' }}>
               {showS?<EyeOff size={13} color={T2}/>:<Eye size={13} color={T2}/>}
@@ -988,69 +1060,109 @@ function ApiCredView({ authStatus }) {
       </SCard>
 
       {/* API List */}
-      {apis.length > 0 && (
-        <div style={{ marginBottom:14 }}>
-          <div style={{ fontWeight:700,fontSize:13,color:T1,marginBottom:8 }}>Saved APIs ({apis.length})</div>
-          {apis.map(a => (
-            <div key={a.id} style={{ background:'#fff',border:`1.5px solid ${a.enabled?a.color+'40':BD}`,
-              borderRadius:11,padding:'12px 14px',marginBottom:8,
-              display:'flex',alignItems:'center',gap:10 }}>
-              {/* Color dot */}
-              <div style={{ width:10,height:10,borderRadius:'50%',background:a.color,flexShrink:0,
-                boxShadow:a.enabled?`0 0 6px ${a.color}`:'none' }} />
-              {/* Info */}
-              <div style={{ flex:1,minWidth:0 }}>
-                <div style={{ fontWeight:700,fontSize:13,color:T1 }}>{a.name}</div>
-                <div style={{ fontSize:11,color:T2 }}>
-                  {a.category==='indian'?'🇮🇳 Indian':'₿ Crypto'} · {Object.keys(a.fields||{}).filter(k=>a.fields[k]).length} fields set
-                  {a.alwaysOn && <span style={{ marginLeft:6,color:'#8B5CF6',fontWeight:600 }}>24/7</span>}
-                </div>
-              </div>
-              {/* Status badge */}
-              <span style={{ fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:4,
-                background:a.enabled?a.color+'15':BD+'40',color:a.enabled?a.color:T2 }}>
-                {a.enabled?'ON':'OFF'}
-              </span>
-              {/* Toggle */}
-              <Toggle on={a.enabled} onToggle={()=>toggleApi(a.id)} size="sm" />
-              {/* Delete */}
-              <button onClick={()=>deleteApi(a.id)} style={{ padding:'5px 8px',borderRadius:6,
-                border:`1px solid ${R}20`,background:'#FFF1F2',color:R,cursor:'pointer',
-                display:'flex',alignItems:'center',fontWeight:700,fontSize:11 }}>
-                ✕
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
+      <div style={{ fontWeight:700,fontSize:13,color:T1,marginBottom:8 }}>
+        Saved APIs ({apis.length}/5 max per broker)
+      </div>
 
-      {apis.length === 0 && (
-        <div style={{ textAlign:'center',padding:'32px 0',color:T2,border:`1.5px dashed ${BD}`,
-          borderRadius:12,marginBottom:14 }}>
+      {apis.length === 0 ? (
+        <div style={{ textAlign:'center',padding:'32px 0',color:T2,
+          border:`1.5px dashed ${BD}`,borderRadius:12,marginBottom:14 }}>
           <div style={{ fontSize:32,marginBottom:8 }}>🔌</div>
           <div style={{ fontWeight:600,fontSize:14 }}>No APIs added yet</div>
           <div style={{ fontSize:12,marginTop:4 }}>Click + ADD API to connect a broker</div>
+        </div>
+      ) : (
+        <div style={{ marginBottom:14 }}>
+          {apis.map(a => {
+            const bDef = getBrokerDef(a.brokerId);
+            const filledFields = Object.values(a.fields||{}).filter(Boolean).length;
+            const totalFields  = bDef?.fields?.length || 0;
+            const isConnected  = connStatus[a.id]==='connected' || a.connected;
+            return (
+              <div key={a.id} style={{ background:'#fff',border:`1.5px solid ${a.enabled?a.color+'40':BD}`,
+                borderRadius:12,padding:'12px 14px',marginBottom:10 }}>
+                {/* Top row */}
+                <div style={{ display:'flex',alignItems:'center',gap:10,marginBottom:8 }}>
+                  {/* Broker logo */}
+                  <div style={{ width:36,height:36,borderRadius:9,background:a.color,
+                    display:'flex',alignItems:'center',justifyContent:'center',
+                    fontSize:14,fontWeight:800,color:'#fff',flexShrink:0 }}>
+                    {a.name[0]}
+                  </div>
+                  <div style={{ flex:1,minWidth:0 }}>
+                    <div style={{ fontWeight:700,fontSize:13,color:T1 }}>{a.name}</div>
+                    <div style={{ fontSize:11,color:T2 }}>
+                      {a.category==='indian'?'🇮🇳':'₿'} {a.brokerId} · {filledFields}/{totalFields} fields
+                      {a.alwaysOn && <span style={{ marginLeft:6,background:'#F5F3FF',color:'#8B5CF6',
+                        padding:'1px 5px',borderRadius:3,fontSize:9,fontWeight:700 }}>24/7</span>}
+                    </div>
+                  </div>
+                  {/* Status dot + label */}
+                  <div style={{ display:'flex',alignItems:'center',gap:4,fontSize:11,
+                    color:isConnected?G:T2,fontWeight:600 }}>
+                    <div style={{ width:7,height:7,borderRadius:'50%',
+                      background:isConnected?G:'#CBD5E1',
+                      boxShadow:isConnected?`0 0 5px ${G}`:'none' }}/>
+                    {isConnected?'Connected':'Not connected'}
+                  </div>
+                </div>
+
+                {/* Actions row */}
+                <div style={{ display:'flex',alignItems:'center',gap:7,borderTop:`1px solid ${BD}`,paddingTop:9 }}>
+                  {/* Enable/Disable toggle */}
+                  <div style={{ display:'flex',alignItems:'center',gap:5,flex:1 }}>
+                    <Toggle on={a.enabled} onToggle={()=>toggleApi(a.id)} size="sm" />
+                    <span style={{ fontSize:11,fontWeight:700,color:a.enabled?SB:T2 }}>
+                      {a.enabled?'Active':'Inactive'}
+                    </span>
+                  </div>
+
+                  {/* Connect button */}
+                  <button onClick={()=>connectApi(a)} style={{ padding:'5px 11px',borderRadius:7,
+                    border:`1px solid ${G}`,background:isConnected?'#F0FDF4':'#fff',
+                    color:G,fontWeight:600,fontSize:11,cursor:'pointer',
+                    display:'flex',alignItems:'center',gap:4 }}>
+                    {connIcon(a.id, a.connected)} {isConnected?'Reconnect':'Connect'}
+                  </button>
+
+                  {/* Edit button */}
+                  <button onClick={()=>openEdit(a)} style={{ padding:'5px 11px',borderRadius:7,
+                    border:`1px solid ${SB}`,background:'#EEF2FF',
+                    color:SB,fontWeight:600,fontSize:11,cursor:'pointer' }}>
+                    ✏ Edit
+                  </button>
+
+                  {/* Delete button */}
+                  <button onClick={()=>deleteApi(a.id)} style={{ padding:'5px 11px',borderRadius:7,
+                    border:`1px solid ${R}30`,background:'#FFF1F2',
+                    color:R,fontWeight:700,fontSize:11,cursor:'pointer' }}>
+                    ✕ Delete
+                  </button>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
       {/* Message */}
       {msg && (
-        <div style={{ background:msg.type==='success'?'#F0FDF4':msg.type==='error'?'#FFF1F2':'#EEF2FF',
+        <div onClick={()=>setMsg(null)} style={{ cursor:'pointer',
+          background:msg.type==='success'?'#F0FDF4':msg.type==='error'?'#FFF1F2':'#EEF2FF',
           border:`1px solid ${msg.type==='success'?'#BBF7D0':msg.type==='error'?'#FECDD3':'#C7D2FE'}`,
-          borderRadius:9,padding:'10px 14px',fontSize:13,
+          borderRadius:9,padding:'10px 14px',fontSize:13,marginBottom:8,
           color:msg.type==='success'?G:msg.type==='error'?R:SB }}>
-          {msg.text}
+          {msg.text} <span style={{ float:'right',opacity:.5 }}>✕</span>
         </div>
       )}
 
-      {/* ── ADD API MODAL ───────────────────────────────── */}
+      {/* ── ADD API MODAL ─────────────────────────────────── */}
       {showModal && (
         <div style={{ position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',
           display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000 }}
           onClick={e=>e.target===e.currentTarget&&closeModal()}>
-          <div style={{ background:'#fff',borderRadius:16,width:480,maxHeight:'85vh',
+          <div style={{ background:'#fff',borderRadius:16,width:500,maxHeight:'85vh',
             overflowY:'auto',boxShadow:'0 20px 60px rgba(0,0,0,0.2)' }}>
-            {/* Modal Header */}
             <div style={{ padding:'18px 20px',borderBottom:`1px solid ${BD}`,
               display:'flex',justifyContent:'space-between',alignItems:'center' }}>
               <div>
@@ -1058,13 +1170,13 @@ function ApiCredView({ authStatus }) {
                   {modalStep===1?'Select Market':modalStep===2?'Select Broker':'Add API Credentials'}
                 </div>
                 <div style={{ fontSize:11,color:T2,marginTop:2 }}>
-                  {modalStep===1?'Choose Indian or Crypto market':
-                   modalStep===2?`Select broker for ${selCategory==='indian'?'Indian':'Crypto'} market`:
+                  {modalStep===1?'Indian markets or Crypto 24/7':
+                   modalStep===2?`${selCategory==='indian'?'🇮🇳 Indian':'₿ Crypto'} Brokers`:
                    `Enter credentials for ${selBroker?.name}`}
                 </div>
               </div>
-              <button onClick={closeModal} style={{ background:'none',border:'none',fontSize:20,
-                cursor:'pointer',color:T2,lineHeight:1 }}>×</button>
+              <button onClick={closeModal} style={{ background:'none',border:'none',
+                fontSize:22,cursor:'pointer',color:T2,lineHeight:1 }}>×</button>
             </div>
 
             <div style={{ padding:'20px' }}>
@@ -1072,17 +1184,16 @@ function ApiCredView({ authStatus }) {
               {modalStep===1 && (
                 <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:12 }}>
                   {[
-                    { id:'indian', label:'🇮🇳 Indian', sub:'NSE/BSE Markets', color:'#10B981' },
-                    { id:'crypto', label:'₿ Crypto',   sub:'24/7 Markets',    color:'#8B5CF6' },
+                    { id:'indian', emoji:'🇮🇳', label:'Indian', sub:'NSE/BSE · 9:15 AM–3:30 PM', color:'#10B981' },
+                    { id:'crypto', emoji:'₿',   label:'Crypto',  sub:'Global · 24/7 Markets',    color:'#8B5CF6' },
                   ].map(cat=>(
-                    <button key={cat.id} onClick={()=>selectCategory(cat.id)} style={{
+                    <button key={cat.id} onClick={()=>selCat(cat.id)} style={{
                       padding:'24px 16px',borderRadius:12,border:`2px solid ${cat.color}30`,
-                      background:cat.color+'08',cursor:'pointer',textAlign:'center',
-                      transition:'all .15s' }}
-                      onMouseEnter={e=>e.currentTarget.style.borderColor=cat.color}
-                      onMouseLeave={e=>e.currentTarget.style.borderColor=cat.color+'30'}>
-                      <div style={{ fontSize:32,marginBottom:8 }}>{cat.id==='indian'?'🇮🇳':'₿'}</div>
-                      <div style={{ fontWeight:700,fontSize:15,color:T1 }}>{cat.id==='indian'?'Indian':'Crypto'}</div>
+                      background:cat.color+'08',cursor:'pointer',textAlign:'center',transition:'all .15s' }}
+                      onMouseEnter={e=>{e.currentTarget.style.borderColor=cat.color;e.currentTarget.style.background=cat.color+'12'}}
+                      onMouseLeave={e=>{e.currentTarget.style.borderColor=cat.color+'30';e.currentTarget.style.background=cat.color+'08'}}>
+                      <div style={{ fontSize:36,marginBottom:8 }}>{cat.emoji}</div>
+                      <div style={{ fontWeight:700,fontSize:15,color:T1 }}>{cat.label}</div>
                       <div style={{ fontSize:11,color:T2,marginTop:3 }}>{cat.sub}</div>
                     </button>
                   ))}
@@ -1096,18 +1207,20 @@ function ApiCredView({ authStatus }) {
                     color:SB,fontSize:12,cursor:'pointer',marginBottom:14,padding:0 }}>← Back</button>
                   <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:10 }}>
                     {brokerList.map(b=>(
-                      <button key={b.id} onClick={()=>selectBroker(b)} style={{
+                      <button key={b.id} onClick={()=>selBrok(b)} style={{
                         padding:'16px',borderRadius:11,border:`2px solid ${b.color}30`,
                         background:b.color+'08',cursor:'pointer',textAlign:'left',transition:'all .15s' }}
-                        onMouseEnter={e=>e.currentTarget.style.borderColor=b.color}
-                        onMouseLeave={e=>e.currentTarget.style.borderColor=b.color+'30'}>
-                        <div style={{ width:32,height:32,borderRadius:8,background:b.color,
+                        onMouseEnter={e=>{e.currentTarget.style.borderColor=b.color}}
+                        onMouseLeave={e=>{e.currentTarget.style.borderColor=b.color+'30'}}>
+                        <div style={{ width:34,height:34,borderRadius:8,background:b.color,
                           display:'flex',alignItems:'center',justifyContent:'center',
-                          marginBottom:8,fontSize:14,fontWeight:800,color:'#fff' }}>
-                          {b.name[0]}
-                        </div>
+                          marginBottom:8,fontSize:15,fontWeight:800,color:'#fff' }}>{b.name[0]}</div>
                         <div style={{ fontWeight:700,fontSize:13,color:T1 }}>{b.name}</div>
-                        {b.alwaysOn && <div style={{ fontSize:10,color:'#8B5CF6',fontWeight:600,marginTop:2 }}>24/7 Crypto</div>}
+                        <div style={{ fontSize:10,color:T2,marginTop:2 }}>
+                          {b.fields.length} credential fields
+                          {b.autoToken && <span style={{ color:G,marginLeft:4 }}>· auto-token</span>}
+                          {b.alwaysOn  && <span style={{ color:'#8B5CF6',marginLeft:4 }}>· 24/7</span>}
+                        </div>
                       </button>
                     ))}
                   </div>
@@ -1120,34 +1233,62 @@ function ApiCredView({ authStatus }) {
                   <button onClick={()=>setModalStep(2)} style={{ background:'none',border:'none',
                     color:SB,fontSize:12,cursor:'pointer',marginBottom:14,padding:0 }}>← Back</button>
 
+                  {/* Auto-token note for supported brokers */}
+                  {selBroker.autoToken && (
+                    <div style={{ background:'#F0FDF4',border:'1px solid #BBF7D0',borderRadius:8,
+                      padding:'9px 12px',marginBottom:14,fontSize:12,color:G }}>
+                      ✅ <b>{selBroker.name}</b> supports auto-token. After saving App ID & Secret Key,
+                      click <b>Connect</b> on the API card — token fetches automatically via OAuth.
+                      No manual copy-paste needed.
+                    </div>
+                  )}
+
                   {/* API Name */}
-                  <div style={{ marginBottom:14 }}>
+                  <div style={{ marginBottom:12 }}>
                     <label style={{ fontSize:12,fontWeight:600,color:T2,display:'block',marginBottom:5 }}>API Name</label>
                     <input value={apiName} onChange={e=>setApiName(e.target.value)}
-                      style={{ width:'100%',padding:'9px 12px',border:`1.5px solid ${BD}`,borderRadius:8,
-                        fontSize:13,color:T1,boxSizing:'border-box' }} />
+                      style={{ width:'100%',padding:'9px 12px',border:`1.5px solid ${BD}`,
+                        borderRadius:8,fontSize:13,color:T1,boxSizing:'border-box' }} />
                   </div>
 
-                  {/* Fields */}
-                  {selBroker.fields.map((field,i) => (
-                    <div key={i} style={{ marginBottom:12 }}>
-                      <label style={{ fontSize:12,fontWeight:600,color:T2,display:'block',marginBottom:5 }}>{field}</label>
-                      <div style={{ display:'flex',alignItems:'center',border:`1.5px solid ${BD}`,borderRadius:8,overflow:'hidden' }}>
-                        <input
-                          type={field.toLowerCase().includes('secret')||field.toLowerCase().includes('key')||field.toLowerCase().includes('token')||field.toLowerCase().includes('pin')?'password':'text'}
-                          value={formData[field]||''}
-                          onChange={e=>setFormData(p=>({...p,[field]:e.target.value}))}
-                          placeholder={`Enter ${field}`}
-                          style={{ flex:1,padding:'9px 12px',border:'none',background:'transparent',
-                            fontSize:12,color:T1,fontFamily:'JetBrains Mono,monospace' }} />
+                  {/* Fields — skip Access Token for auto-token brokers (fetched automatically) */}
+                  {selBroker.fields.filter(f =>
+                    !(selBroker.autoToken && f === (selBroker.tokenField||'Access Token'))
+                  ).map((field,i) => {
+                    const isSecret = field.toLowerCase().includes('secret')||
+                                     field.toLowerCase().includes('key')||
+                                     field.toLowerCase().includes('token')||
+                                     field.toLowerCase().includes('pin')||
+                                     field.toLowerCase().includes('totp');
+                    return (
+                      <div key={i} style={{ marginBottom:11 }}>
+                        <label style={{ fontSize:12,fontWeight:600,color:T2,display:'block',marginBottom:4 }}>
+                          {field}
+                        </label>
+                        <div style={{ display:'flex',alignItems:'center',
+                          border:`1.5px solid ${BD}`,borderRadius:8,overflow:'hidden' }}>
+                          <input
+                            type={isSecret&&!showPwd[field]?'password':'text'}
+                            value={formData[field]||''}
+                            onChange={e=>setFormData(p=>({...p,[field]:e.target.value}))}
+                            placeholder={`Enter ${field}`}
+                            style={{ flex:1,padding:'9px 12px',border:'none',background:'transparent',
+                              fontSize:12,color:T1,fontFamily:'JetBrains Mono,monospace' }} />
+                          {isSecret && (
+                            <button onClick={()=>setShowPwd(p=>({...p,[field]:!p[field]}))}
+                              style={{ padding:'0 10px',border:'none',background:'transparent',cursor:'pointer' }}>
+                              {showPwd[field]?<EyeOff size={12} color={T2}/>:<Eye size={12} color={T2}/>}
+                            </button>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
 
                   {selBroker.alwaysOn && (
                     <div style={{ background:'#F5F3FF',border:'1px solid #DDD6FE',borderRadius:8,
                       padding:'9px 12px',marginBottom:12,fontSize:12,color:'#7C3AED' }}>
-                      ⏰ This API will be active 24/7 (crypto market never closes)
+                      ⏰ Delta Exchange trades 24/7 — this API stays active round the clock
                     </div>
                   )}
 
@@ -1162,9 +1303,75 @@ function ApiCredView({ authStatus }) {
           </div>
         </div>
       )}
+
+      {/* ── EDIT API MODAL ─────────────────────────────────── */}
+      {editApi && (
+        <div style={{ position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',
+          display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000 }}
+          onClick={e=>e.target===e.currentTarget&&closeEdit()}>
+          <div style={{ background:'#fff',borderRadius:16,width:500,maxHeight:'85vh',
+            overflowY:'auto',boxShadow:'0 20px 60px rgba(0,0,0,0.2)' }}>
+            <div style={{ padding:'18px 20px',borderBottom:`1px solid ${BD}`,
+              display:'flex',justifyContent:'space-between',alignItems:'center' }}>
+              <div>
+                <div style={{ fontWeight:800,fontSize:16,color:T1 }}>Edit API Credentials</div>
+                <div style={{ fontSize:11,color:T2,marginTop:2 }}>{editApi.name}</div>
+              </div>
+              <button onClick={closeEdit} style={{ background:'none',border:'none',
+                fontSize:22,cursor:'pointer',color:T2 }}>×</button>
+            </div>
+            <div style={{ padding:'20px' }}>
+              <div style={{ marginBottom:12 }}>
+                <label style={{ fontSize:12,fontWeight:600,color:T2,display:'block',marginBottom:5 }}>API Name</label>
+                <input value={editName} onChange={e=>setEditName(e.target.value)}
+                  style={{ width:'100%',padding:'9px 12px',border:`1.5px solid ${BD}`,
+                    borderRadius:8,fontSize:13,color:T1,boxSizing:'border-box' }} />
+              </div>
+              {(getBrokerDef(editApi.brokerId)?.fields||[]).map((field,i)=>{
+                const isSecret = field.toLowerCase().includes('secret')||
+                                 field.toLowerCase().includes('key')||
+                                 field.toLowerCase().includes('token')||
+                                 field.toLowerCase().includes('pin');
+                return (
+                  <div key={i} style={{ marginBottom:11 }}>
+                    <label style={{ fontSize:12,fontWeight:600,color:T2,display:'block',marginBottom:4 }}>{field}</label>
+                    <div style={{ display:'flex',alignItems:'center',
+                      border:`1.5px solid ${BD}`,borderRadius:8,overflow:'hidden' }}>
+                      <input
+                        type={isSecret&&!showPwd['edit_'+field]?'password':'text'}
+                        value={editData[field]||''}
+                        onChange={e=>setEditData(p=>({...p,[field]:e.target.value}))}
+                        placeholder={`Enter ${field}`}
+                        style={{ flex:1,padding:'9px 12px',border:'none',background:'transparent',
+                          fontSize:12,color:T1,fontFamily:'JetBrains Mono,monospace' }} />
+                      {isSecret && (
+                        <button onClick={()=>setShowPwd(p=>({...p,['edit_'+field]:!p['edit_'+field]}))}
+                          style={{ padding:'0 10px',border:'none',background:'transparent',cursor:'pointer' }}>
+                          {showPwd['edit_'+field]?<EyeOff size={12} color={T2}/>:<Eye size={12} color={T2}/>}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+              <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginTop:4 }}>
+                <button onClick={closeEdit} style={{ padding:'10px',borderRadius:8,
+                  border:`1.5px solid ${BD}`,background:'#fff',color:T2,fontWeight:600,cursor:'pointer' }}>
+                  Cancel
+                </button>
+                <button onClick={saveEdit} style={{ padding:'10px',borderRadius:8,border:'none',
+                  background:SB,color:'#fff',fontWeight:700,cursor:'pointer' }}>
+                  Save Changes
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+
 
 // ── Live Chart View ───────────────────────────────────────
 function LiveChartView({ selectedSymbols, ticks, orbLevels, activeSignals, authStatus }) {
