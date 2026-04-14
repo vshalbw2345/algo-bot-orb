@@ -679,7 +679,10 @@ function Sidebar({ active, setActive, socketOk, authOk, masterOn }) {
 // VIEWS
 // ─────────────────────────────────────────────────────────
 function DashboardView({ masterOn, setMasterOn, selectedSymbols, ticks, orbLevels,
-  activeSignals, stockToggles, onToggleStock, alerts, riskStatus, rrConfig }) {
+  activeSignals, stockToggles, onToggleStock, alerts, riskStatus, rrConfig,
+  authStatus, savedApis }) {
+
+  const [activeTab, setActiveTab] = useState('indian'); // 'indian' | 'crypto'
 
   const totalPnl = Object.entries(activeSignals).reduce((acc,[sym,sig])=>{
     const ltp = ticks[sym]?.ltp || sig.entry;
@@ -693,11 +696,30 @@ function DashboardView({ masterOn, setMasterOn, selectedSymbols, ticks, orbLevel
     try { await api.post('/api/control/master', { enabled: next }); } catch(e) {}
   };
 
+  // Connected brokers from savedApis
+  const indianApis = (savedApis||[]).filter(a=>a.category==='indian' && a.enabled);
+  const cryptoApis = (savedApis||[]).filter(a=>a.category==='crypto' && a.enabled);
+  const connectedIndian = indianApis.filter(a=>a.connected || (a.brokerId==='fyers'&&authStatus?.isAuthenticated));
+  const connectedCrypto = cryptoApis.filter(a=>a.connected);
+
+  // Indian stats
+  const cap = rrConfig?.capital||50000;
+  const lev = rrConfig?.leverage||5;
+  const rsk = rrConfig?.riskPct||2;
+  const rr  = rrConfig?.rrRatio||2;
+  const msl = rrConfig?.maxSLPerDay||3;
+  const ec  = cap*lev;
+  const rpt = ec*rsk/100;
+  const dll = rpt*msl;
+  const slHits = Object.values(riskStatus?.daily?.stockSLHits||{}).reduce((a,b)=>a+b,0);
+  const dayPnl = riskStatus?.daily?.totalPnl||0;
+
   return (
     <div style={{ padding:'18px 22px',height:'100%',overflowY:'auto' }}>
-      {/* Master Toggle */}
+
+      {/* ── MASTER TOGGLE ──────────────────────────────────── */}
       <div style={{ background:masterOn?'#EEF2FF':'#F8FAFC',border:`2px solid ${masterOn?SB:BD}`,
-        borderRadius:13,padding:'14px 18px',marginBottom:18,
+        borderRadius:13,padding:'14px 18px',marginBottom:16,
         display:'flex',alignItems:'center',justifyContent:'space-between',transition:'all .3s' }}>
         <div style={{ display:'flex',alignItems:'center',gap:10 }}>
           <div style={{ width:9,height:9,borderRadius:'50%',background:masterOn?G:'#CBD5E1',
@@ -705,7 +727,7 @@ function DashboardView({ masterOn, setMasterOn, selectedSymbols, ticks, orbLevel
           <div>
             <div style={{ fontWeight:800,fontSize:15,color:masterOn?SB:T2 }}>MASTER TRADE CONTROL</div>
             <div style={{ fontSize:11,color:T2 }}>
-              {masterOn?'✓ Live signals → Fyers API order execution':'Signals paused — no orders will be placed'}
+              {masterOn?'✓ All enabled brokers active — live order execution':'All trading paused — no orders will be placed'}
             </div>
           </div>
         </div>
@@ -717,134 +739,305 @@ function DashboardView({ masterOn, setMasterOn, selectedSymbols, ticks, orbLevel
         </div>
       </div>
 
-      {/* Stats — balance always from funds global state */}
-      {(()=>{
-        // Read balance from rrConfig.capital (set by loadBalance on login)
-        let liveBal = rrConfig?.capital || 0;
-
-        const cap = liveBal > 0 ? liveBal : (rrConfig?.capital || 50000);
-        const lev = rrConfig?.leverage || 5;
-        const rsk = rrConfig?.riskPct || 2;
-        const msl = rrConfig?.maxSLPerDay || 3;
-        const ec  = cap * lev;
-        const rpt = (ec * rsk) / 100;
-        const dll = rpt * msl;
-        const balSrc = liveBal > 0 ? '● Live from Fyers' : 'Default (login to sync)';
-        return (
-          <div style={{ display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,marginBottom:18 }}>
-            <StatCard label="Effective Capital" value={fmtINR(ec)}
-              sub={balSrc} icon={Shield} color={liveBal>0?G:SB} />
-            <StatCard label="Live P&L" value={(totalPnl>=0?'+':'')+fmtINR(totalPnl)}
-              sub={totalPnl>=0?'▲ Profitable':'▼ In loss'} icon={Activity} color={totalPnl>=0?G:R} />
-            <StatCard label="Active Trades" value={`${Object.keys(activeSignals).length}/10`}
-              sub={`${selectedSymbols.filter(s=>stockToggles[s]!==false).length} enabled`} icon={BarChart2} color="#8B5CF6" />
-            <StatCard label="Risk / Trade" value={fmtINR(rpt)}
-              sub={`Daily limit: ${fmtINR(dll)}`} icon={Target} color={W} />
+      {/* ── CONNECTED BROKERS ROW ─────────────────────────── */}
+      {(savedApis||[]).length > 0 && (
+        <div style={{ marginBottom:16 }}>
+          <div style={{ fontWeight:700,fontSize:12,color:T2,marginBottom:8,textTransform:'uppercase',letterSpacing:.5 }}>
+            Connected Brokers
           </div>
-        );
-      })()}
+          <div style={{ display:'flex',gap:8,flexWrap:'wrap' }}>
+            {(savedApis||[]).filter(a=>a.enabled).map(a=>{
+              const isConn = a.connected || (a.brokerId==='fyers'&&authStatus?.isAuthenticated);
+              return (
+                <div key={a.id} style={{ display:'flex',alignItems:'center',gap:7,
+                  padding:'7px 13px',borderRadius:9,
+                  background:isConn?a.color+'12':'#F8FAFC',
+                  border:`1.5px solid ${isConn?a.color+'40':BD}` }}>
+                  <div style={{ width:8,height:8,borderRadius:'50%',
+                    background:isConn?a.color:'#CBD5E1',
+                    boxShadow:isConn?`0 0 5px ${a.color}`:'none' }}/>
+                  <span style={{ fontSize:12,fontWeight:700,color:isConn?a.color:T2 }}>{a.name}</span>
+                  {a.alwaysOn && <span style={{ fontSize:9,color:'#8B5CF6',fontWeight:700 }}>24/7</span>}
+                  <span style={{ fontSize:10,color:isConn?G:R,fontWeight:600 }}>
+                    {isConn?'●':'○'}{isConn?' Live':' Offline'}
+                  </span>
+                </div>
+              );
+            })}
+            {(savedApis||[]).filter(a=>a.enabled).length===0 && (
+              <div style={{ fontSize:12,color:T2,padding:'7px 0' }}>
+                No brokers connected. Go to API Credentials → Add API.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
-      {/* ── Active Rules Panel ─────────────────────────── */}
-      {(()=>{
-        const cap = rrConfig?.capital||50000;
-        const lev = rrConfig?.leverage||5;
-        const rsk = rrConfig?.riskPct||2;
-        const rr  = rrConfig?.rrRatio||2;
-        const msl = rrConfig?.maxSLPerDay||3;
-        const ec  = cap*lev;
-        const rpt = ec*rsk/100;
-        const slHits = Object.values(riskStatus?.daily?.stockSLHits||{}).reduce((a,b)=>a+b,0);
-        const pnl    = riskStatus?.daily?.totalPnl || 0;
-        const dll    = rpt*msl;
-        const rules = [
-          { label:'Fyers Auth',       ok: true,                  val: 'Connected',                            color:G },
-          { label:'Invested Capital', ok: cap>0,                 val: `₹${cap.toLocaleString('en-IN')}`,     color:SB },
-          { label:'Leverage',         ok: lev>0,                 val: `${lev}x → EC ₹${(ec/100000).toFixed(1)}L`, color:SB },
-          { label:'Risk / Trade',     ok: rpt>0,                 val: `₹${rpt.toFixed(0)} (${rsk}%)`,        color:W },
-          { label:'R:R Ratio',        ok: rr>=1,                 val: `1:${rr} → Target ${rr}x SL`,         color:G },
-          { label:'Max SL / Day',     ok: slHits<msl,            val: `${slHits}/${msl} hits used`,          color:slHits>=msl?R:G },
-          { label:'Daily Loss Cap',   ok: pnl>-dll,              val: `₹${Math.abs(pnl).toFixed(0)} of ₹${dll.toFixed(0)}`, color:pnl<=-dll*0.7?R:W },
-          { label:'Master Toggle',    ok: masterOn,              val: masterOn?'ON — Bot Active':'OFF — No trades', color:masterOn?G:R },
-          { label:'Stocks Selected',  ok: selectedSymbols.length>0, val: `${selectedSymbols.length} stocks`,  color:selectedSymbols.length>0?G:W },
-          { label:'Square-off',       ok: true,                  val: 'Auto at 15:25 PM',                    color:G },
-        ];
-        return (
-          <div style={{ marginBottom:16 }}>
-            <div style={{ fontWeight:700,fontSize:13,color:T1,marginBottom:8,display:'flex',alignItems:'center',gap:6 }}>
-              <Shield size={14} color={SB}/> Active Rules & Status
+      {/* ── TAB SWITCHER ─────────────────────────────────── */}
+      <div style={{ display:'flex',gap:2,marginBottom:16,background:'#F1F5F9',borderRadius:10,padding:3 }}>
+        {[
+          { id:'indian', label:'🇮🇳 Indian Markets', count: connectedIndian.length },
+          { id:'crypto', label:'₿ Crypto (24/7)',    count: connectedCrypto.length },
+        ].map(tab=>(
+          <button key={tab.id} onClick={()=>setActiveTab(tab.id)} style={{
+            flex:1,padding:'9px 0',borderRadius:8,border:'none',cursor:'pointer',
+            fontWeight:700,fontSize:13,transition:'all .2s',
+            background:activeTab===tab.id?'#fff':'transparent',
+            color:activeTab===tab.id?SB:T2,
+            boxShadow:activeTab===tab.id?'0 1px 4px rgba(0,0,0,.08)':'none' }}>
+            {tab.label}
+            <span style={{ marginLeft:6,fontSize:10,padding:'1px 6px',borderRadius:4,
+              background:activeTab===tab.id?SB+'20':'transparent',
+              color:activeTab===tab.id?SB:T2 }}>{tab.count}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* ── INDIAN TAB ───────────────────────────────────── */}
+      {activeTab==='indian' && (
+        <div>
+          {/* Stats row */}
+          <div style={{ display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,marginBottom:16 }}>
+            <StatCard label="Effective Capital" value={fmtINR(ec)}
+              sub={authStatus?.isAuthenticated?`₹${cap.toLocaleString('en-IN')} × ${lev}x`:'Login to sync'}
+              icon={Shield} color={authStatus?.isAuthenticated?G:SB} />
+            <StatCard label="Live P&L"
+              value={(totalPnl>=0?'+':'')+fmtINR(totalPnl)}
+              sub={totalPnl>=0?'▲ Profitable':'▼ In loss'}
+              icon={Activity} color={totalPnl>=0?G:R} />
+            <StatCard label="Active Trades"
+              value={`${Object.keys(activeSignals).length}/10`}
+              sub={`${selectedSymbols.filter(s=>stockToggles[s]!==false).length} stocks enabled`}
+              icon={BarChart2} color="#8B5CF6" />
+            <StatCard label="Risk / Trade"
+              value={fmtINR(rpt)}
+              sub={`Daily cap: ${fmtINR(dll)}`}
+              icon={Target} color={W} />
+          </div>
+
+          {/* Connected Indian broker panels */}
+          {connectedIndian.length > 0 && (
+            <div style={{ marginBottom:16 }}>
+              <div style={{ fontWeight:700,fontSize:13,color:T1,marginBottom:8 }}>Broker Summary</div>
+              <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(220px,1fr))',gap:9 }}>
+                {connectedIndian.map(a=>{
+                  const brokerEc = cap*lev;
+                  const brokerRpt = brokerEc*rsk/100;
+                  return (
+                    <div key={a.id} style={{ background:'#fff',border:`1.5px solid ${a.color}30`,
+                      borderRadius:11,padding:'12px 14px' }}>
+                      <div style={{ display:'flex',alignItems:'center',gap:8,marginBottom:10 }}>
+                        <div style={{ width:32,height:32,borderRadius:8,background:a.color,
+                          display:'flex',alignItems:'center',justifyContent:'center',
+                          fontSize:14,fontWeight:800,color:'#fff' }}>{a.name[0]}</div>
+                        <div>
+                          <div style={{ fontWeight:700,fontSize:13,color:T1 }}>{a.name}</div>
+                          <div style={{ fontSize:10,color:G,fontWeight:600 }}>● Live</div>
+                        </div>
+                        <div style={{ marginLeft:'auto',fontSize:10,color:T2 }}>
+                          {a.fields['Client ID']||''}
+                        </div>
+                      </div>
+                      <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:6 }}>
+                        <div style={{ background:a.color+'10',borderRadius:7,padding:'6px 9px' }}>
+                          <div style={{ fontSize:9,color:T2,fontWeight:600 }}>Eff. Capital</div>
+                          <div className="mono" style={{ fontSize:13,fontWeight:700,color:a.color }}>{fmtINR(brokerEc)}</div>
+                        </div>
+                        <div style={{ background:'#F0FDF4',borderRadius:7,padding:'6px 9px' }}>
+                          <div style={{ fontSize:9,color:T2,fontWeight:600 }}>Risk/Trade</div>
+                          <div className="mono" style={{ fontSize:13,fontWeight:700,color:G }}>{fmtINR(brokerRpt)}</div>
+                        </div>
+                        <div style={{ background:'#FFF7ED',borderRadius:7,padding:'6px 9px' }}>
+                          <div style={{ fontSize:9,color:T2,fontWeight:600 }}>Leverage</div>
+                          <div className="mono" style={{ fontSize:13,fontWeight:700,color:W }}>{lev}x</div>
+                        </div>
+                        <div style={{ background:'#EEF2FF',borderRadius:7,padding:'6px 9px' }}>
+                          <div style={{ fontSize:9,color:T2,fontWeight:600 }}>Active Trades</div>
+                          <div className="mono" style={{ fontSize:13,fontWeight:700,color:SB }}>
+                            {Object.keys(activeSignals).length}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Rules panel */}
+          <div style={{ marginBottom:14 }}>
+            <div style={{ fontWeight:700,fontSize:12,color:T2,marginBottom:7,textTransform:'uppercase',letterSpacing:.5 }}>
+              Active Rules
             </div>
             <div style={{ display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:7 }}>
-              {rules.map((r,i)=>(
+              {[
+                { label:'Fyers Auth',      ok:authStatus?.isAuthenticated, val:authStatus?.isAuthenticated?'✓ Connected':'✗ Not logged in', color:authStatus?.isAuthenticated?G:R },
+                { label:'Capital',         ok:cap>1000, val:`₹${cap.toLocaleString('en-IN')}`, color:SB },
+                { label:'Leverage',        ok:lev>0,    val:`${lev}x → ₹${(ec/100000).toFixed(1)}L`, color:SB },
+                { label:'Risk/Trade',      ok:rpt>0,    val:`₹${rpt.toFixed(0)} (${rsk}%)`, color:W },
+                { label:'R:R',             ok:rr>=1,    val:`1:${rr}`, color:G },
+                { label:'SL Hits',         ok:slHits<msl, val:`${slHits}/${msl} used`, color:slHits>=msl?R:G },
+                { label:'Day Loss',        ok:dayPnl>-dll, val:`₹${Math.abs(dayPnl).toFixed(0)} / ₹${dll.toFixed(0)}`, color:dayPnl<=-dll*0.7?R:W },
+                { label:'Master',          ok:masterOn, val:masterOn?'ON':'OFF', color:masterOn?G:R },
+                { label:'Stocks',          ok:selectedSymbols.length>0, val:`${selectedSymbols.length} selected`, color:selectedSymbols.length>0?G:W },
+                { label:'Auto Squareoff',  ok:true,     val:'15:25 PM', color:G },
+              ].map((r,i)=>(
                 <div key={i} style={{ background:r.color+'10',border:`1.5px solid ${r.color}30`,
-                  borderRadius:9,padding:'8px 11px',display:'flex',flexDirection:'column',gap:3 }}>
-                  <div style={{ fontSize:10,color:T2,fontWeight:600 }}>{r.label}</div>
+                  borderRadius:8,padding:'7px 10px' }}>
+                  <div style={{ fontSize:9,color:T2,fontWeight:600,marginBottom:2 }}>{r.label}</div>
                   <div style={{ fontSize:11,fontWeight:700,color:r.color }}>{r.val}</div>
                 </div>
               ))}
             </div>
           </div>
-        );
-      })()}
 
-      {/* Risk halt warning */}
-      {riskStatus?.daily?.tradingHalted && (
-        <div style={{ background:'#FFF1F2',border:`1px solid #FECDD3`,borderRadius:10,
-          padding:'10px 14px',marginBottom:16,display:'flex',gap:8,alignItems:'center' }}>
-          <AlertTriangle size={16} color={R} />
-          <span style={{ fontSize:13,fontWeight:600,color:R }}>
-            🛑 Trading HALTED: {riskStatus.daily.haltReason}
-          </span>
-          <button onClick={()=>api.post('/api/risk/resume',{})} style={{
-            marginLeft:'auto',padding:'4px 12px',borderRadius:7,border:`1px solid ${R}`,
-            background:'#fff',color:R,fontSize:12,fontWeight:600,cursor:'pointer' }}>
-            Resume
-          </button>
+          {/* Risk halt */}
+          {riskStatus?.daily?.tradingHalted && (
+            <div style={{ background:'#FFF1F2',border:`1px solid #FECDD3`,borderRadius:10,
+              padding:'10px 14px',marginBottom:14,display:'flex',gap:8,alignItems:'center' }}>
+              <AlertTriangle size={16} color={R}/>
+              <span style={{ fontSize:13,fontWeight:600,color:R }}>🛑 Trading HALTED: {riskStatus.daily.haltReason}</span>
+              <button onClick={()=>api.post('/api/risk/resume',{})} style={{ marginLeft:'auto',
+                padding:'4px 12px',borderRadius:7,border:`1px solid ${R}`,
+                background:'#fff',color:R,fontSize:12,fontWeight:600,cursor:'pointer' }}>Resume</button>
+            </div>
+          )}
+
+          {/* Stock Cards */}
+          <div style={{ marginBottom:14 }}>
+            <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:9 }}>
+              <h3 style={{ fontWeight:700,fontSize:13,color:T1,display:'flex',alignItems:'center',gap:6 }}>
+                <BarChart2 size={14} color={SB}/> ORB Stock Monitor
+                <span style={{ color:T2,fontWeight:400,fontSize:11 }}>(10 slots · live)</span>
+              </h3>
+              <div style={{ display:'flex',gap:6 }}>
+                {['ON','OFF'].map(v=>(
+                  <button key={v} onClick={()=>selectedSymbols.forEach(s=>onToggleStock(s,v==='ON'))}
+                    style={{ padding:'3px 10px',borderRadius:6,border:`1px solid ${v==='ON'?G:R}`,
+                      background:v==='ON'?'#F0FDF4':'#FFF1F2',color:v==='ON'?G:R,
+                      fontSize:11,fontWeight:600,cursor:'pointer' }}>All {v}</button>
+                ))}
+              </div>
+            </div>
+            <div style={{ display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:9 }}>
+              {Array.from({length:10},(_,i)=>{
+                const sym = selectedSymbols[i];
+                return sym ? (
+                  <StockCard key={sym} symbol={sym} tick={ticks[sym]} orb={orbLevels[sym]}
+                    signal={activeSignals[sym]} toggleOn={stockToggles[sym]!==false}
+                    onToggle={()=>onToggleStock(sym, stockToggles[sym]===false)} masterOn={masterOn}
+                    rrCfg={rrConfig||riskStatus?.config} />
+                ) : (
+                  <div key={i} style={{ border:`2px dashed ${BD}`,borderRadius:12,padding:18,
+                    display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
+                    gap:6,color:T2,minHeight:140 }}>
+                    <Plus size={18} color="#CBD5E1"/>
+                    <span style={{ fontSize:11 }}>Slot {i+1}</span>
+                    <span style={{ fontSize:10 }}>Add via Stock List</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Stock Cards */}
-      <div style={{ marginBottom:16 }}>
-        <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10 }}>
-          <h3 style={{ fontWeight:700,fontSize:14,color:T1 }}>
-            📊 ORB Stock Monitor
-            <span style={{ color:T2,fontWeight:400,fontSize:12,marginLeft:8 }}>(10 slots · live)</span>
-          </h3>
-          <div style={{ display:'flex',gap:7 }}>
-            {['ON','OFF'].map(v=>(
-              <button key={v} onClick={()=>selectedSymbols.forEach(s=>onToggleStock(s,v==='ON'))}
-                style={{ padding:'4px 11px',borderRadius:7,border:`1px solid ${v==='ON'?G:R}`,
-                  background:v==='ON'?'#F0FDF4':'#FFF1F2',color:v==='ON'?G:R,
-                  fontSize:11,fontWeight:600,cursor:'pointer' }}>All {v}</button>
-            ))}
-          </div>
-        </div>
-        <div style={{ display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:9 }}>
-          {Array.from({length:10},(_,i)=>{
-            const sym = selectedSymbols[i];
-            return sym ? (
-              <StockCard key={sym} symbol={sym} tick={ticks[sym]} orb={orbLevels[sym]}
-                signal={activeSignals[sym]} toggleOn={stockToggles[sym]!==false}
-                onToggle={()=>onToggleStock(sym, stockToggles[sym]===false)} masterOn={masterOn}
-                rrCfg={rrConfig || riskStatus?.config} />
-            ) : (
-              <div key={i} style={{ border:`2px dashed ${BD}`,borderRadius:12,padding:18,
-                display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
-                gap:6,color:T2,minHeight:150 }}>
-                <Plus size={18} color="#CBD5E1" />
-                <span style={{ fontSize:11 }}>Slot {i+1}</span>
-                <span style={{ fontSize:10 }}>Add via Stock List</span>
-              </div>
-            );
-          })}
-        </div>
-      </div>
+      {/* ── CRYPTO TAB ───────────────────────────────────── */}
+      {activeTab==='crypto' && (
+        <div>
+          {cryptoApis.length === 0 ? (
+            <div style={{ textAlign:'center',padding:'40px 0',border:`2px dashed ${BD}`,borderRadius:12 }}>
+              <div style={{ fontSize:40,marginBottom:8 }}>₿</div>
+              <div style={{ fontWeight:600,fontSize:14,color:T1 }}>No Crypto APIs added</div>
+              <div style={{ fontSize:12,color:T2,marginTop:4 }}>Go to API Credentials → Add API → Crypto → Delta Exchange</div>
+            </div>
+          ) : (
+            <div>
+              {cryptoApis.map(a=>{
+                const isConn = a.connected;
+                // Delta Exchange crypto panel
+                return (
+                  <div key={a.id} style={{ background:'#fff',border:`2px solid ${a.color}30`,
+                    borderRadius:14,padding:'18px',marginBottom:14 }}>
+                    {/* Header */}
+                    <div style={{ display:'flex',alignItems:'center',gap:10,marginBottom:16 }}>
+                      <div style={{ width:40,height:40,borderRadius:10,background:a.color,
+                        display:'flex',alignItems:'center',justifyContent:'center',
+                        fontSize:18,fontWeight:800,color:'#fff' }}>₿</div>
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontWeight:800,fontSize:15,color:T1 }}>{a.name}</div>
+                        <div style={{ fontSize:11,color:T2 }}>Crypto · 24/7 Markets</div>
+                      </div>
+                      <div style={{ display:'flex',alignItems:'center',gap:5,
+                        padding:'4px 10px',borderRadius:7,
+                        background:isConn?'#F5F3FF':'#F8FAFC',
+                        border:`1px solid ${isConn?a.color+'40':BD}` }}>
+                        <div style={{ width:6,height:6,borderRadius:'50%',
+                          background:isConn?a.color:'#CBD5E1',
+                          boxShadow:isConn?`0 0 5px ${a.color}`:'none' }}/>
+                        <span style={{ fontSize:11,fontWeight:700,color:isConn?a.color:T2 }}>
+                          {isConn?'Connected 24/7':'Not Connected'}
+                        </span>
+                      </div>
+                    </div>
 
-      {/* Alerts */}
+                    {/* Stats grid */}
+                    <div style={{ display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:9,marginBottom:14 }}>
+                      {[
+                        { label:'Effective Capital', val:'—', sub:'Set in R&R Crypto', color:a.color },
+                        { label:'Active Strategy',   val:'ORB', sub:'Opening Range Breakout', color:'#10B981' },
+                        { label:'Leverage',          val:'—x', sub:'Set in R&R Crypto', color:W },
+                        { label:'Active Trades',     val:'0', sub:'No open positions', color:SB },
+                      ].map((s,i)=>(
+                        <div key={i} style={{ background:s.color+'10',border:`1px solid ${s.color}20`,
+                          borderRadius:9,padding:'10px 12px' }}>
+                          <div style={{ fontSize:10,color:T2,fontWeight:600,marginBottom:4 }}>{s.label}</div>
+                          <div className="mono" style={{ fontSize:16,fontWeight:700,color:s.color }}>{s.val}</div>
+                          <div style={{ fontSize:10,color:T2,marginTop:2 }}>{s.sub}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Crypto slots — 5 positions */}
+                    <div style={{ fontWeight:700,fontSize:12,color:T2,marginBottom:8,textTransform:'uppercase',letterSpacing:.5 }}>
+                      Crypto Positions (5 slots)
+                    </div>
+                    <div style={{ display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:8 }}>
+                      {Array.from({length:5},(_,i)=>(
+                        <div key={i} style={{ border:`2px dashed ${a.color}30`,borderRadius:10,
+                          padding:14,display:'flex',flexDirection:'column',alignItems:'center',
+                          justifyContent:'center',gap:5,minHeight:100,background:a.color+'05' }}>
+                          <span style={{ fontSize:18 }}>₿</span>
+                          <span style={{ fontSize:10,color:T2 }}>Crypto {i+1}</span>
+                          <span style={{ fontSize:9,color:T2 }}>Add via Crypto Selection</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    {!isConn && (
+                      <div style={{ marginTop:12,padding:'9px 12px',borderRadius:8,
+                        background:'#FFF7ED',border:'1px solid #FED7AA',
+                        fontSize:12,color:W }}>
+                        ⚠️ Connect Delta Exchange in API Credentials to enable live data and trading.
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── ALERT FEED (always visible) ────────────────── */}
       <SCard title="Alert Feed" icon={Bell}
         action={<span style={{ fontSize:12,color:T2 }}>{alerts.length} today</span>}>
         {alerts.length===0
           ? <div style={{ textAlign:'center',color:T2,fontSize:13,padding:'16px 0' }}>No alerts yet…</div>
-          : <div style={{ maxHeight:220,overflowY:'auto' }}>{alerts.slice().reverse().map((a,i)=><AlertItem key={i} alert={a}/>)}</div>
+          : <div style={{ maxHeight:220,overflowY:'auto' }}>
+              {alerts.slice().reverse().map((a,i)=><AlertItem key={i} alert={a}/>)}
+            </div>
         }
       </SCard>
     </div>
@@ -3042,7 +3235,7 @@ export default function App() {
               selectedSymbols={selectedSymbols} ticks={ticks} orbLevels={orbLevels}
               activeSignals={activeSignals} stockToggles={stockToggles}
               onToggleStock={handleStockToggle} alerts={alerts} riskStatus={riskStatus}
-              rrConfig={rrConfig} />
+              rrConfig={rrConfig} authStatus={authStatus} savedApis={savedApis} />
           )}
           {activeView==='api' && <ApiCredView authStatus={authStatus} />}
           {activeView==='chart' && (
