@@ -1975,7 +1975,7 @@ function TestSignalView({ authStatus, funds: globalFunds, setFunds: setGlobalFun
   const [hist,    setHist]    = useState([]);
 
   // ── CRYPTO ────────────────────────────────────────────────
-  const [cSym,    setCsym]    = useState('BTCUSDT');
+  const [cSym,    setCsym]    = useState('BTCUSD');
   const [cSide,   setCside]   = useState('buy');
   const [cQty,    setCqty]    = useState('1');
   const [cApi,    setCapi]    = useState(''); // selected Delta API
