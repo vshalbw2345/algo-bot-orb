@@ -591,6 +591,146 @@ app.get('/api/myip', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────
+// CHART ALERT WEBHOOK
+// Receives alerts from standalone chart → places broker order
+// ─────────────────────────────────────────────────────────
+app.post('/api/alerts/webhook', async (req, res) => {
+  const { symbol, side, price, type, tf, note, qty, broker, source } = req.body;
+
+  if (!symbol || !side) {
+    return res.status(400).json({ success:false, error:'symbol and side required' });
+  }
+
+  const alertEntry = {
+    id:       Date.now(),
+    symbol,
+    side:     side.toUpperCase(),
+    price:    parseFloat(price) || 0,
+    type:     type || side,
+    tf:       tf || '5m',
+    note:     note || '',
+    source:   source || 'chart',
+    broker:   broker || 'auto',
+    ts:       new Date().toISOString(),
+    status:   'RECEIVED'
+  };
+
+  logger.info(`[WEBHOOK] Alert received: ${side} ${symbol} @ ${price} from ${source}`);
+  _addAlert({ ...alertEntry, msg: `[CHART] ${side} ${symbol} @ ${price} | ${type} | ${tf}` });
+  emit('chartAlert', alertEntry);
+
+  // ── Determine order params ──────────────────────────────
+  const orderSide = side.toUpperCase() === 'BUY' ||
+    type === 'buy' || type === 'buy_tgt' ? 'BUY' : 'SELL';
+
+  // ── Route to correct broker ───────────────────────────
+  const isCrypto = !symbol.endsWith('.NS') && !symbol.endsWith('.BSE') &&
+                   symbol.includes('USD') || symbol.includes('BTC');
+
+  try {
+    // ── FYERS (Indian stocks) ─────────────────────────────
+    if (!isCrypto && fyersAuth.isAuthenticated) {
+      if (!masterEnabled) {
+        alertEntry.status = 'SKIPPED';
+        return res.json({ success:true, status:'SKIPPED', reason:'Master toggle is OFF', alert:alertEntry });
+      }
+
+      // Convert Yahoo symbol to Fyers format
+      const fyersSym = symbol.replace('.NS','-EQ').replace('NSE:','');
+      const fyersSymFull = fyersSym.startsWith('NSE:') ? fyersSym : `NSE:${fyersSym}`;
+
+      const orderQty = parseInt(qty) || 1;
+      const result = await orderExecutor.placeOrder({
+        symbol:      fyersSymFull,
+        side:        orderSide,
+        qty:         orderQty,
+        orderType:   'MARKET',
+        productType: process.env.PRODUCT_TYPE || 'INTRADAY'
+      });
+
+      alertEntry.status = result.success ? 'EXECUTED' : 'FAILED';
+      alertEntry.orderId = result.orderId;
+      alertEntry.error   = result.error;
+
+      _addAlert({
+        type:   orderSide,
+        symbol: fyersSymFull,
+        msg:    result.success
+          ? `✅ [CHART→FYERS] ${orderSide} ${orderQty} ${fyersSymFull} @ MARKET | OrderID: ${result.orderId}`
+          : `❌ [CHART→FYERS] FAILED: ${result.error}`,
+        status: result.success ? 'EXECUTED' : 'FAILED',
+        ts:     new Date().toISOString()
+      });
+
+      logger.info(`[WEBHOOK] Fyers order: ${JSON.stringify(result)}`);
+      return res.json({ success:true, broker:'fyers', result, alert:alertEntry });
+    }
+
+    // ── DELTA EXCHANGE (Crypto) ───────────────────────────
+    if (isCrypto) {
+      // Find first connected Delta API
+      const deltaApis = deltaAuth.getStatus().filter(a => a.connected);
+      if (!deltaApis.length) {
+        return res.json({ success:false, error:'No Delta Exchange API connected', alert:alertEntry });
+      }
+
+      const deltaApi  = deltaApis[0];
+      const cryptoSym = symbol.replace('USDT','USD'); // Delta uses BTCUSD not BTCUSDT
+      const orderQty  = parseInt(qty) || 1;
+
+      // Look up product ID
+      const axios = require('axios');
+      const a = deltaAuth.getApi(deltaApi.id);
+      const prodRes = await axios.get(`${a.baseUrl}/v2/products`, { timeout:10000 });
+      const product = (prodRes.data.result||[]).find(p => p.symbol === cryptoSym || p.symbol === symbol);
+
+      if (!product) {
+        return res.json({ success:false, error:`Product ${cryptoSym} not found on Delta`, alert:alertEntry });
+      }
+
+      const result = await deltaAuth.placeOrder(deltaApi.id, {
+        productId: product.id,
+        side:      orderSide,
+        size:      orderQty,
+        orderType: 'market_order'
+      });
+
+      alertEntry.status  = result.success ? 'EXECUTED' : 'FAILED';
+      alertEntry.orderId = result.orderId;
+
+      _addAlert({
+        type:   orderSide,
+        symbol: cryptoSym,
+        msg:    result.success
+          ? `✅ [CHART→DELTA] ${orderSide} ${orderQty} ${cryptoSym} | OrderID: ${result.orderId}`
+          : `❌ [CHART→DELTA] FAILED: ${result.error}`,
+        status: result.success ? 'EXECUTED' : 'FAILED',
+        ts:     new Date().toISOString()
+      });
+
+      logger.info(`[WEBHOOK] Delta order: ${JSON.stringify(result)}`);
+      return res.json({ success:true, broker:'delta', result, alert:alertEntry });
+    }
+
+    // No broker available
+    alertEntry.status = 'NO_BROKER';
+    return res.json({ success:false, error:'No broker connected. Login to Fyers or connect Delta Exchange.', alert:alertEntry });
+
+  } catch(err) {
+    logger.error('[WEBHOOK] Order error:', err.message);
+    alertEntry.status = 'ERROR';
+    alertEntry.error  = err.message;
+    return res.json({ success:false, error:err.message, alert:alertEntry });
+  }
+});
+
+// ── Get all chart-fired alerts ────────────────────────────
+app.get('/api/alerts/history', (req, res) => {
+  const chartAlerts = alertLog.filter(a => a.source === 'chart' || a.msg?.includes('[CHART]'));
+  res.json({ success:true, alerts: chartAlerts.slice(-100) });
+});
+
 // ── Force reconnect feed ─────────────────────────────────
 app.get('/api/feed/reconnect', (req, res) => {
   try {
