@@ -1096,9 +1096,9 @@ const BROKERS = {
   ],
   crypto: [
     { id:'delta', name:'Delta Exchange', color:'#8B5CF6',
-      fields:['App Name','API Key','API Secret'],
+      fields:['App Name','API Key','API Secret','Region'],
       alwaysOn:true,
-      note:'Delta Exchange runs 24/7. API Key and Secret from delta.exchange → API Keys section' },
+      note:'India users: select India. Global users: select Global. API Key and Secret from delta.exchange → Profile → API Keys' },
   ]
 };
 
@@ -1233,8 +1233,9 @@ function ApiCredView({ authStatus }) {
         }
         // Call backend to verify and fetch balance
         try {
+          const region = (a.fields['Region']||'india').toLowerCase().includes('india')?'india':'global';
           const r = await api.post('/api/delta/connect', {
-            id: String(a.id), name: appName, apiKey, apiSecret
+            id: String(a.id), name: appName, apiKey, apiSecret, region
           });
           if (r.success) {
             saveApis(apis.map(x => x.id===a.id
@@ -1544,6 +1545,24 @@ function ApiCredView({ authStatus }) {
                                      field.toLowerCase().includes('token')||
                                      field.toLowerCase().includes('pin')||
                                      field.toLowerCase().includes('totp');
+                    // Special handling for Region field
+                    if (field === 'Region') {
+                      return (
+                        <div key={i} style={{ marginBottom:11 }}>
+                          <label style={{ fontSize:12,fontWeight:600,color:T2,display:'block',marginBottom:4 }}>Region</label>
+                          <select value={formData['Region']||'India'}
+                            onChange={e=>setFormData(p=>({...p,Region:e.target.value}))}
+                            style={{ width:'100%',padding:'9px 12px',border:`1.5px solid ${BD}`,
+                              borderRadius:8,fontSize:13,color:T1,background:'#fff' }}>
+                            <option value="India">🇮🇳 India (api.india.delta.exchange)</option>
+                            <option value="Global">🌍 Global (api.delta.exchange)</option>
+                          </select>
+                          <div style={{ fontSize:10,color:T2,marginTop:3 }}>
+                            Select India if you are using Delta Exchange India account
+                          </div>
+                        </div>
+                      );
+                    }
                     return (
                       <div key={i} style={{ marginBottom:11 }}>
                         <label style={{ fontSize:12,fontWeight:600,color:T2,display:'block',marginBottom:4 }}>

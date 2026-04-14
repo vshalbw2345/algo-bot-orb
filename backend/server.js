@@ -457,12 +457,12 @@ if (process.env.NODE_ENV === 'production') {
 
 // Connect Delta Exchange API
 app.post('/api/delta/connect', async (req, res) => {
-  const { id, name, apiKey, apiSecret } = req.body;
+  const { id, name, apiKey, apiSecret, region } = req.body;
   if (!id || !apiKey || !apiSecret) {
     return res.status(400).json({ success: false, error: 'id, apiKey and apiSecret required' });
   }
   try {
-    deltaAuth.addApi({ id, name: name||'Delta Exchange', apiKey, apiSecret });
+    deltaAuth.addApi({ id, name: name||"Delta Exchange", apiKey, apiSecret, region: region||"india" });
     const result = await deltaAuth.connect(id);
 
     const balances = result.balance || [];
