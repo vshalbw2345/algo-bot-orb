@@ -1997,7 +1997,9 @@ function TestSignalView({ authStatus, funds: globalFunds, setFunds: setGlobalFun
   // Load actual products from Delta when API is selected
   useEffect(() => {
     if (!cApi) return;
-    api.get(`/api/delta/products/${cApi}`)
+    const selApiObj = allApis.find(a=>String(a.id)===String(cApi));
+    const region = (selApiObj?.fields?.['Region']||'india').toLowerCase().includes('india')?'india':'global';
+    api.get(`/api/delta/products/${cApi}?region=${region}`)
       .then(r => { if (r.success && r.products?.length > 0) {
         setDeltaProducts(r.products.map(p => p.symbol));
         setCsym(r.products[0]?.symbol || 'BTCUSD');
@@ -2037,8 +2039,16 @@ function TestSignalView({ authStatus, funds: globalFunds, setFunds: setGlobalFun
     if (!window.confirm(`Place REAL ${cSide.toUpperCase()} order: ${cQty} × ${cSym} on Delta Exchange?`)) return;
     setCload(true); setCres(null);
     try {
+      // Find the selected API to pass credentials (handles server restart)
+      const selApiObj = allApis.find(a=>String(a.id)===String(cApi));
       const r = await api.post('/api/delta/order', {
-        apiId: cApi, symbol: cSym, side: cSide, size: parseInt(cQty)||1
+        apiId:     String(cApi),
+        symbol:    cSym,
+        side:      cSide,
+        size:      parseInt(cQty)||1,
+        apiKey:    selApiObj?.fields?.['API Key'],
+        apiSecret: selApiObj?.fields?.['API Secret'],
+        region:    (selApiObj?.fields?.['Region']||'india').toLowerCase().includes('india')?'india':'global'
       });
       setCres(r);
     } catch(e) { setCres({ success:false, error:e.message }); }

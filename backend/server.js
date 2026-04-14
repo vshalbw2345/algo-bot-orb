@@ -536,7 +536,8 @@ app.get('/api/delta/products/:apiId', async (req, res) => {
   try {
     const axios = require('axios');
     const a = deltaAuth.getApi(req.params.apiId);
-    const baseUrl = a?.baseUrl || 'https://api.india.delta.exchange';
+    const region = req.query.region || 'india';
+    const baseUrl = a?.baseUrl || (region==='global'?'https://api.delta.exchange':'https://api.india.delta.exchange');
     const r = await axios.get(`${baseUrl}/v2/products`, { timeout: 10000 });
     const products = (r.data.result || [])
       .filter(p => p.trading_status === 'operational' && p.product_type === 'perpetual_futures')
@@ -549,15 +550,18 @@ app.get('/api/delta/products/:apiId', async (req, res) => {
 
 // Place Delta Exchange order
 app.post('/api/delta/order', async (req, res) => {
-  const { apiId, symbol, side, size, orderType, limitPrice } = req.body;
+  const { apiId, symbol, side, size, orderType, limitPrice, apiKey, apiSecret, region } = req.body;
   if (!apiId || !symbol || !side || !size) {
     return res.status(400).json({ success: false, error: 'apiId, symbol, side, size required' });
   }
   try {
-    // First get product_id for symbol
+    // Re-register API if credentials provided (handles server restart)
+    if (apiKey && apiSecret) {
+      deltaAuth.addApi({ id: String(apiId), name: 'Delta', apiKey, apiSecret, region: region||'india' });
+    }
     const axios = require('axios');
-    const a = deltaAuth.getApi(apiId);
-    if (!a) return res.json({ success: false, error: 'API not found' });
+    const a = deltaAuth.getApi(String(apiId));
+    if (!a) return res.json({ success: false, error: 'API not found — please reconnect in API Credentials' });
     
     const prodRes = await axios.get(`${a.baseUrl}/v2/products`, { timeout: 10000 });
     const product = (prodRes.data.result || []).find(p => p.symbol === symbol);
