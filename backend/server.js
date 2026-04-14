@@ -465,7 +465,6 @@ app.post('/api/delta/connect', async (req, res) => {
     deltaAuth.addApi({ id, name: name||'Delta Exchange', apiKey, apiSecret });
     const result = await deltaAuth.connect(id);
 
-    // Parse balance — find USDT or USD wallet
     const balances = result.balance || [];
     let availableBalance = 0;
     for (const b of balances) {
@@ -482,8 +481,20 @@ app.post('/api/delta/connect', async (req, res) => {
     logger.info(`[DELTA] Connected ${name} — Balance: ${availableBalance}`);
     res.json({ success: true, connected: true, balance: balances, availableBalance });
   } catch (err) {
-    logger.error('[DELTA] Connect error:', err.message);
-    res.json({ success: false, error: err.message, connected: false });
+    // Extract full error details
+    const errDetails = {
+      message: err.message,
+      status:  err.response?.status,
+      data:    err.response?.data,
+      raw:     String(err)
+    };
+    logger.error('[DELTA] Connect error:', JSON.stringify(errDetails));
+    const errMsg = err.response?.data?.error?.message
+      || err.response?.data?.message
+      || err.response?.data?.error
+      || err.message
+      || 'Unknown error';
+    res.json({ success: false, error: String(errMsg), details: errDetails, connected: false });
   }
 });
 

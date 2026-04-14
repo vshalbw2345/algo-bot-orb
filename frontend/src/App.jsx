@@ -1237,21 +1237,20 @@ function ApiCredView({ authStatus }) {
             id: String(a.id), name: appName, apiKey, apiSecret
           });
           if (r.success) {
-            // Save balance to api entry
             saveApis(apis.map(x => x.id===a.id
               ? { ...x, connected:true, balance: r.balance, availableBalance: r.availableBalance }
               : x
             ));
             setConnStatus(p => ({...p, [a.id]: 'connected'}));
-            setMsg({ type:'success', text: `✅ Delta Exchange connected! Balance: $${r.availableBalance?.toFixed(2)||'0'}` });
+            setMsg({ type:'success', text: `✅ Delta Exchange connected! Balance: $${parseFloat(r.availableBalance||0).toFixed(2)}` });
           } else {
-            throw new Error(r.error || 'Connection failed');
+            // Show full error details
+            const errMsg = r.error || (r.details && JSON.stringify(r.details)) || 'Connection failed';
+            throw new Error(errMsg);
           }
         } catch(err) {
           setConnStatus(p => ({...p, [a.id]: 'error'}));
-          const errText = typeof err.message === 'string' ? err.message
-            : typeof err === 'string' ? err
-            : JSON.stringify(err);
+          const errText = err?.message || String(err);
           setMsg({ type:'error', text: '❌ Delta: ' + errText });
         }
       } else {
