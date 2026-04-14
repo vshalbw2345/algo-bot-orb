@@ -552,6 +552,17 @@ app.post('/api/delta/order', async (req, res) => {
   }
 });
 
+// ── Check outbound IP (for Delta whitelist) ──────────────
+app.get('/api/myip', async (req, res) => {
+  try {
+    const axios = require('axios');
+    const r = await axios.get('https://api.ipify.org?format=json', { timeout: 5000 });
+    res.json({ success: true, ip: r.data.ip });
+  } catch(e) {
+    res.json({ success: false, error: e.message });
+  }
+});
+
 // ── Force reconnect feed ─────────────────────────────────
 app.get('/api/feed/reconnect', (req, res) => {
   try {
