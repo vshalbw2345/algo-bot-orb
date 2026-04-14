@@ -1103,7 +1103,7 @@ const BROKERS = {
 };
 
 // ── API Credentials View ──────────────────────────────────
-function ApiCredView({ authStatus }) {
+function ApiCredView({ authStatus, onApisChange }) {
   const [loading,  setLoading]  = useState(false);
   const [msg,      setMsg]      = useState(null);
   const [token,    setToken]    = useState('');
@@ -1134,6 +1134,7 @@ function ApiCredView({ authStatus }) {
   const saveApis = (updated) => {
     setApis(updated);
     localStorage.setItem('orb_apis', JSON.stringify(updated));
+    if (onApisChange) onApisChange(updated); // sync parent immediately
   };
 
   // ── Add flow ──────────────────────────────────────────────
@@ -3459,7 +3460,7 @@ export default function App() {
               onToggleStock={handleStockToggle} alerts={alerts} riskStatus={riskStatus}
               rrConfig={rrConfig} authStatus={authStatus} savedApis={savedApis} />
           )}
-          {activeView==='api' && <ApiCredView authStatus={authStatus} />}
+          {activeView==='api' && <ApiCredView authStatus={authStatus} onApisChange={setSavedApis} />}
           {activeView==='chart' && (
             <LiveChartView selectedSymbols={selectedSymbols} ticks={ticks}
               orbLevels={orbLevels} activeSignals={activeSignals} authStatus={authStatus} />
