@@ -22,6 +22,7 @@ const rateLimit     = require('express-rate-limit');
 
 const logger        = require('./modules/logger');
 const fyersAuth     = require('./modules/fyersAuth');
+const deltaAuth     = require('./modules/deltaAuth');
 const fyersData     = require('./modules/fyersData');
 const orbEngine     = require('./modules/orbEngine');
 const orderExecutor = require('./modules/orderExecutor');
