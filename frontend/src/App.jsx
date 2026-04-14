@@ -1983,8 +1983,10 @@ function TestSignalView({ authStatus, funds: globalFunds, setFunds: setGlobalFun
   const [cLoad,   setCload]   = useState(false);
 
   const funds = globalFunds || [];
-  const indianApis = (savedApis||[]).filter(a=>a.category==='indian'&&a.enabled);
-  const cryptoApis = (savedApis||[]).filter(a=>a.category==='crypto'&&a.enabled);
+  // Read directly from localStorage — always fresh
+  const allApis    = (() => { try { return JSON.parse(localStorage.getItem('orb_apis')||'[]'); } catch(_){ return []; }})();
+  const indianApis = allApis.filter(a=>a.category==='indian'&&a.enabled);
+  const cryptoApis = allApis.filter(a=>a.category==='crypto'&&a.enabled);
 
   const CRYPTO_PAIRS = [
     'BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT',
@@ -2279,8 +2281,9 @@ function RiskRewardView({ rrConfig, setRrConfig, selectedSymbols, ticks, authSta
   const update = (field, val) => setRrConfig(p=>({...p, [field]:val}));
   const save   = async () => { try { await api.post('/api/risk/config', rrConfig); } catch(e){} };
 
-  const indianApis  = (savedApis||[]).filter(a=>a.category==='indian'&&a.enabled);
-  const cryptoApis  = (savedApis||[]).filter(a=>a.category==='crypto'&&a.enabled);
+  const allApis2    = (() => { try { return JSON.parse(localStorage.getItem('orb_apis')||'[]'); } catch(_){ return []; }})();
+  const indianApis  = allApis2.filter(a=>a.category==='indian'&&a.enabled);
+  const cryptoApis  = allApis2.filter(a=>a.category==='crypto'&&a.enabled);
 
   return (
     <div style={{ padding:'22px',height:'100%',overflowY:'auto' }}>
