@@ -1249,7 +1249,10 @@ function ApiCredView({ authStatus }) {
           }
         } catch(err) {
           setConnStatus(p => ({...p, [a.id]: 'error'}));
-          setMsg({ type:'error', text: '❌ Delta: ' + err.message });
+          const errText = typeof err.message === 'string' ? err.message
+            : typeof err === 'string' ? err
+            : JSON.stringify(err);
+          setMsg({ type:'error', text: '❌ Delta: ' + errText });
         }
       } else {
         setMsg({ type:'info', text: a.name + ' — paste access token in the edit form.' });

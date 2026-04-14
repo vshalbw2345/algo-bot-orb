@@ -101,9 +101,15 @@ class DeltaAuth {
       throw new Error(res.message || JSON.stringify(res));
     } catch (err) {
       a.connected = false;
-      logger.error(`[DELTA] ❌ Connect failed: ${err.message}`);
-      // Return detailed error
-      const errMsg = err.response?.data?.message || err.response?.data?.error || err.message;
+      // Extract detailed error message from Axios response
+      let errMsg = err.message;
+      if (err.response) {
+        const d = err.response.data;
+        errMsg = d?.error?.message || d?.message || d?.error || JSON.stringify(d) || err.message;
+        logger.error(`[DELTA] ❌ HTTP ${err.response.status}: ${JSON.stringify(err.response.data)}`);
+      } else {
+        logger.error(`[DELTA] ❌ Connect failed: ${err.message}`);
+      }
       throw new Error(errMsg);
     }
   }
