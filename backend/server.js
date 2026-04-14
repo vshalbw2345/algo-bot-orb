@@ -531,6 +531,22 @@ app.get('/api/delta/status', (req, res) => {
   res.json({ success: true, apis: deltaAuth.getStatus() });
 });
 
+// Get Delta products list
+app.get('/api/delta/products/:apiId', async (req, res) => {
+  try {
+    const axios = require('axios');
+    const a = deltaAuth.getApi(req.params.apiId);
+    const baseUrl = a?.baseUrl || 'https://api.india.delta.exchange';
+    const r = await axios.get(`${baseUrl}/v2/products`, { timeout: 10000 });
+    const products = (r.data.result || [])
+      .filter(p => p.trading_status === 'operational' && p.product_type === 'perpetual_futures')
+      .map(p => ({ id: p.id, symbol: p.symbol, description: p.description }));
+    res.json({ success: true, products });
+  } catch(err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
 // Place Delta Exchange order
 app.post('/api/delta/order', async (req, res) => {
   const { apiId, symbol, side, size, orderType, limitPrice } = req.body;
@@ -538,17 +554,25 @@ app.post('/api/delta/order', async (req, res) => {
     return res.status(400).json({ success: false, error: 'apiId, symbol, side, size required' });
   }
   try {
-    // Get product ID for symbol
+    // First get product_id for symbol
+    const axios = require('axios');
+    const a = deltaAuth.getApi(apiId);
+    if (!a) return res.json({ success: false, error: 'API not found' });
+    
+    const prodRes = await axios.get(`${a.baseUrl}/v2/products`, { timeout: 10000 });
+    const product = (prodRes.data.result || []).find(p => p.symbol === symbol);
+    if (!product) return res.json({ success: false, error: `Product ${symbol} not found on Delta Exchange` });
+    
     const result = await deltaAuth.placeOrder(apiId, {
-      productId: symbol, side, size: parseInt(size),
-      orderType: orderType || 'market_order',
-      limitPrice
+      productId: product.id, side, size: parseInt(size),
+      orderType: orderType || 'market_order', limitPrice
     });
     logger.info(`[DELTA] Order placed: ${JSON.stringify(result)}`);
     res.json(result);
   } catch (err) {
     logger.error('[DELTA] Order error:', err.message);
-    res.json({ success: false, error: err.message });
+    const msg = err.response?.data?.error?.message || err.response?.data?.message || err.message;
+    res.json({ success: false, error: String(msg) });
   }
 });
 

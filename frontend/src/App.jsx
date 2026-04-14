@@ -1988,10 +1988,22 @@ function TestSignalView({ authStatus, funds: globalFunds, setFunds: setGlobalFun
   const indianApis = allApis.filter(a=>a.category==='indian'&&a.enabled);
   const cryptoApis = allApis.filter(a=>a.category==='crypto'&&a.enabled);
 
-  const CRYPTO_PAIRS = [
-    'BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT',
-    'DOGEUSDT','ADAUSDT','AVAXUSDT','MATICUSDT','LINKUSDT'
-  ];
+  // Delta Exchange correct symbols (perpetual futures)
+  const [deltaProducts, setDeltaProducts] = useState([
+    'BTCUSD','ETHUSD','SOLUSD','BNBUSD','XRPUSD',
+    'DOGEUSD','ADAUSD','AVAXUSD','MATICUSD','LINKUSD'
+  ]);
+
+  // Load actual products from Delta when API is selected
+  useEffect(() => {
+    if (!cApi) return;
+    api.get(`/api/delta/products/${cApi}`)
+      .then(r => { if (r.success && r.products?.length > 0) {
+        setDeltaProducts(r.products.map(p => p.symbol));
+        setCsym(r.products[0]?.symbol || 'BTCUSD');
+      }})
+      .catch(()=>{});
+  }, [cApi]);
 
   // ── Indian simulated test ──────────────────────────────────
   const send = async () => {
@@ -2188,7 +2200,7 @@ function TestSignalView({ authStatus, funds: globalFunds, setFunds: setGlobalFun
                     <select value={cSym} onChange={e=>setCsym(e.target.value)}
                       style={{ width:'100%',padding:'8px 10px',border:`1.5px solid ${BD}`,
                         borderRadius:8,fontSize:13,color:T1,background:'#fff' }}>
-                      {CRYPTO_PAIRS.map(p=><option key={p} value={p}>{p}</option>)}
+                      {deltaProducts.map(p=><option key={p} value={p}>{p}</option>)}
                     </select>
                   </div>
 
