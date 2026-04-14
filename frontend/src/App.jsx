@@ -983,21 +983,54 @@ function DashboardView({ masterOn, setMasterOn, selectedSymbols, ticks, orbLevel
                     </div>
 
                     {/* Stats grid */}
-                    <div style={{ display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:9,marginBottom:14 }}>
-                      {[
-                        { label:'Effective Capital', val:'—', sub:'Set in R&R Crypto', color:a.color },
-                        { label:'Active Strategy',   val:'ORB', sub:'Opening Range Breakout', color:'#10B981' },
-                        { label:'Leverage',          val:'—x', sub:'Set in R&R Crypto', color:W },
-                        { label:'Active Trades',     val:'0', sub:'No open positions', color:SB },
-                      ].map((s,i)=>(
-                        <div key={i} style={{ background:s.color+'10',border:`1px solid ${s.color}20`,
-                          borderRadius:9,padding:'10px 12px' }}>
-                          <div style={{ fontSize:10,color:T2,fontWeight:600,marginBottom:4 }}>{s.label}</div>
-                          <div className="mono" style={{ fontSize:16,fontWeight:700,color:s.color }}>{s.val}</div>
-                          <div style={{ fontSize:10,color:T2,marginTop:2 }}>{s.sub}</div>
+                    {(()=>{
+                      // Show real balances if connected
+                      const balances = a.balance || [];
+                      const usdtBal = balances.find(b=>(b.asset_symbol||b.currency||'').toUpperCase()==='USDT');
+                      const btcBal  = balances.find(b=>(b.asset_symbol||b.currency||'').toUpperCase()==='BTC');
+                      const availUSDT = parseFloat(usdtBal?.available_balance||usdtBal?.balance||a.availableBalance||0);
+                      return (
+                        <div style={{ display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:9,marginBottom:14 }}>
+                          {[
+                            { label:'Available Balance', val: availUSDT>0?`$${availUSDT.toFixed(2)}`:'—', sub: availUSDT>0?'USDT Wallet':'Connect to sync', color:a.color },
+                            { label:'Active Strategy',   val:'ORB', sub:'Opening Range Breakout', color:'#10B981' },
+                            { label:'Leverage',          val:'—x', sub:'Set in R&R Crypto', color:W },
+                            { label:'Open Positions',    val:'0', sub:'No open positions', color:SB },
+                          ].map((s,i)=>(
+                            <div key={i} style={{ background:s.color+'10',border:`1px solid ${s.color}20`,
+                              borderRadius:9,padding:'10px 12px' }}>
+                              <div style={{ fontSize:10,color:T2,fontWeight:600,marginBottom:4 }}>{s.label}</div>
+                              <div className="mono" style={{ fontSize:16,fontWeight:700,color:s.color }}>{s.val}</div>
+                              <div style={{ fontSize:10,color:T2,marginTop:2 }}>{s.sub}</div>
+                            </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
+                      );
+                    })()}
+
+                    {/* Wallet breakdown */}
+                    {isConn && a.balance && a.balance.length > 0 && (
+                      <div style={{ marginBottom:14 }}>
+                        <div style={{ fontWeight:700,fontSize:12,color:T2,marginBottom:7,textTransform:'uppercase',letterSpacing:.5 }}>
+                          Wallet Balances
+                        </div>
+                        <div style={{ display:'flex',gap:7,flexWrap:'wrap' }}>
+                          {a.balance.filter(b=>parseFloat(b.available_balance||b.balance||0)>0).slice(0,8).map((b,i)=>{
+                            const asset = b.asset_symbol||b.currency||'?';
+                            const bal   = parseFloat(b.available_balance||b.balance||0);
+                            return (
+                              <div key={i} style={{ background:'#F5F3FF',border:'1px solid #DDD6FE',
+                                borderRadius:8,padding:'7px 12px',minWidth:100 }}>
+                                <div style={{ fontSize:10,color:'#7C3AED',fontWeight:700 }}>{asset}</div>
+                                <div className="mono" style={{ fontSize:13,fontWeight:700,color:T1 }}>
+                                  {bal.toFixed(4)}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
 
                     {/* Crypto slots — 5 positions */}
                     <div style={{ fontWeight:700,fontSize:12,color:T2,marginBottom:8,textTransform:'uppercase',letterSpacing:.5 }}>
@@ -1190,18 +1223,34 @@ function ApiCredView({ authStatus }) {
         }, 10000);
 
       } else if (a.brokerId === 'delta') {
-        // Delta Exchange — validate API key
         const apiKey    = a.fields['API Key'];
         const apiSecret = a.fields['API Secret'];
+        const appName   = a.fields['App Name'] || a.name;
         if (!apiKey || !apiSecret) {
           setMsg({ type:'error', text: 'Please edit this API and fill in API Key and API Secret first.' });
           setConnStatus(p => ({...p, [a.id]: 'idle'}));
           return;
         }
-        // Mark as connected (Delta doesn't need OAuth)
-        saveApis(apis.map(x => x.id===a.id ? {...x, connected:true} : x));
-        setConnStatus(p => ({...p, [a.id]: 'connected'}));
-        setMsg({ type:'success', text: '✅ Delta Exchange API saved! Active 24/7.' });
+        // Call backend to verify and fetch balance
+        try {
+          const r = await api.post('/api/delta/connect', {
+            id: String(a.id), name: appName, apiKey, apiSecret
+          });
+          if (r.success) {
+            // Save balance to api entry
+            saveApis(apis.map(x => x.id===a.id
+              ? { ...x, connected:true, balance: r.balance, availableBalance: r.availableBalance }
+              : x
+            ));
+            setConnStatus(p => ({...p, [a.id]: 'connected'}));
+            setMsg({ type:'success', text: `✅ Delta Exchange connected! Balance: $${r.availableBalance?.toFixed(2)||'0'}` });
+          } else {
+            throw new Error(r.error || 'Connection failed');
+          }
+        } catch(err) {
+          setConnStatus(p => ({...p, [a.id]: 'error'}));
+          setMsg({ type:'error', text: '❌ Delta: ' + err.message });
+        }
       } else {
         setMsg({ type:'info', text: a.name + ' — paste access token in the edit form.' });
         setConnStatus(p => ({...p, [a.id]: 'idle'}));

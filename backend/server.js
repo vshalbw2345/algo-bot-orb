@@ -450,6 +450,75 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
+// ─────────────────────────────────────────────────────────
+// DELTA EXCHANGE ROUTES
+// ─────────────────────────────────────────────────────────
+
+// Connect Delta Exchange API
+app.post('/api/delta/connect', async (req, res) => {
+  const { id, name, apiKey, apiSecret } = req.body;
+  if (!id || !apiKey || !apiSecret) {
+    return res.status(400).json({ success: false, error: 'id, apiKey and apiSecret required' });
+  }
+  try {
+    deltaAuth.addApi({ id, name: name||'Delta Exchange', apiKey, apiSecret });
+    const result = await deltaAuth.connect(id);
+
+    // Parse balance — find USDT or USD wallet
+    const balances = result.balance || [];
+    let availableBalance = 0;
+    for (const b of balances) {
+      const asset = (b.asset_symbol || b.currency || '').toUpperCase();
+      if (asset === 'USDT' || asset === 'USD' || asset === 'INR') {
+        availableBalance = parseFloat(b.available_balance || b.balance || 0);
+        break;
+      }
+    }
+    if (availableBalance === 0 && balances.length > 0) {
+      availableBalance = parseFloat(balances[0].available_balance || balances[0].balance || 0);
+    }
+
+    logger.info(`[DELTA] Connected ${name} — Balance: ${availableBalance}`);
+    res.json({ success: true, connected: true, balance: balances, availableBalance });
+  } catch (err) {
+    logger.error('[DELTA] Connect error:', err.message);
+    res.json({ success: false, error: err.message, connected: false });
+  }
+});
+
+// Get Delta balance
+app.get('/api/delta/balance/:id', async (req, res) => {
+  try {
+    const balance = await deltaAuth.getBalance(req.params.id);
+    let availableBalance = 0;
+    for (const b of balance) {
+      const asset = (b.asset_symbol || b.currency || '').toUpperCase();
+      if (asset === 'USDT' || asset === 'USD') {
+        availableBalance = parseFloat(b.available_balance || b.balance || 0);
+        break;
+      }
+    }
+    res.json({ success: true, balance, availableBalance });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// Get Delta positions
+app.get('/api/delta/positions/:id', async (req, res) => {
+  try {
+    const positions = await deltaAuth.getPositions(req.params.id);
+    res.json({ success: true, positions });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// Get Delta status for all APIs
+app.get('/api/delta/status', (req, res) => {
+  res.json({ success: true, apis: deltaAuth.getStatus() });
+});
+
 // ── Force reconnect feed ─────────────────────────────────
 app.get('/api/feed/reconnect', (req, res) => {
   try {
