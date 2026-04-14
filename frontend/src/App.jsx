@@ -1936,463 +1936,615 @@ function StockListView({ selectedSymbols, setSelectedSymbols, onSaveToServer }) 
 }
 
 // ── Test Signal View ──────────────────────────────────────
-function TestSignalView({ authStatus, funds: globalFunds, setFunds: setGlobalFunds }) {
-  const [sym,    setSym]    = useState('NSE:RELIANCE-EQ');
-  const [side,   setSide]   = useState('BUY');
-  const [qty,    setQty]    = useState('10');
-  const [ot,     setOt]     = useState('MARKET');
-  const [price,  setPrice]  = useState('');
-  const [res,    setRes]    = useState(null);
-  const [hist,   setHist]   = useState([]);
-  const [load,   setLoad]   = useState(false);
-  const [fLoad,  setFLoad]  = useState(false);
-  const [fErr,   setFErr]   = useState(null);
+function TestSignalView({ authStatus, funds: globalFunds, setFunds: setGlobalFunds, savedApis }) {
+  const [tab,     setTab]     = useState('indian'); // 'indian' | 'crypto'
+
+  // ── INDIAN ────────────────────────────────────────────────
+  const [sym,     setSym]     = useState('NSE:RELIANCE-EQ');
+  const [side,    setSide]    = useState('BUY');
+  const [qty,     setQty]     = useState('1');
+  const [ot,      setOt]      = useState('MARKET');
+  const [price,   setPrice]   = useState('');
+  const [selApi,  setSelApi]  = useState(''); // selected Indian API
+  const [res,     setRes]     = useState(null);
+  const [realRes, setRealRes] = useState(null);
+  const [load,    setLoad]    = useState(false);
+  const [realLoad,setRealLoad]= useState(false);
+  const [hist,    setHist]    = useState([]);
+
+  // ── CRYPTO ────────────────────────────────────────────────
+  const [cSym,    setCsym]    = useState('BTCUSDT');
+  const [cSide,   setCside]   = useState('buy');
+  const [cQty,    setCqty]    = useState('1');
+  const [cApi,    setCapi]    = useState(''); // selected Delta API
+  const [cRes,    setCres]    = useState(null);
+  const [cLoad,   setCload]   = useState(false);
 
   const funds = globalFunds || [];
+  const indianApis = (savedApis||[]).filter(a=>a.category==='indian'&&a.enabled);
+  const cryptoApis = (savedApis||[]).filter(a=>a.category==='crypto'&&a.enabled);
 
-  // Fetch balance from Fyers — updates global state
-  const fetchBalance = async () => {
-    setFLoad(true); setFErr(null);
-    try {
-      const r = await api.get('/api/portfolio/funds');
-      if (r.funds) setGlobalFunds(r.funds);
-      else setFErr('No fund data returned.');
-    } catch(e) { setFErr('Could not fetch balance. Check Fyers connection.'); }
-    setFLoad(false);
-  };
+  const CRYPTO_PAIRS = [
+    'BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT',
+    'DOGEUSDT','ADAUSDT','AVAXUSDT','MATICUSDT','LINKUSDT'
+  ];
 
-  // Auto-fetch if not already loaded
-  useEffect(() => {
-    if (authStatus?.isAuthenticated && funds.length === 0) fetchBalance();
-  }, [authStatus?.isAuthenticated]);
-
-  const [realRes,  setRealRes]  = useState(null);
-  const [realLoad, setRealLoad] = useState(false);
-
-  // Simulated test — no real order
+  // ── Indian simulated test ──────────────────────────────────
   const send = async () => {
     setLoad(true);
     try {
-      const r = await api.post('/api/orders/test', { symbol:sym, side, qty:parseInt(qty)||1, orderType:ot, price:parseFloat(price)||0 });
-      setRes(r);
-      setHist(p=>[r,...p].slice(0,10));
+      const r = await api.post('/api/orders/test', {
+        symbol:sym, side, qty:parseInt(qty)||1, orderType:ot, price:parseFloat(price)||0
+      });
+      setRes(r); setHist(p=>[r,...p].slice(0,10));
     } catch(e) { setRes({ success:false, error:e.message }); }
     setLoad(false);
   };
 
-  // REAL order — places actual order at Fyers
+  // ── Indian real order ──────────────────────────────────────
   const sendReal = async () => {
-    if (!window.confirm(`Place REAL ${side} order for ${qty} shares of ${sym}?\nThis will use actual margin!`)) return;
+    if (!window.confirm(`Place REAL ${side} order: ${qty} × ${sym}?`)) return;
     setRealLoad(true); setRealRes(null);
     try {
       const r = await api.post('/api/orders/place', {
-        symbol: sym, side, qty: parseInt(qty)||1,
-        orderType: ot, price: parseFloat(price)||0,
-        productType: 'INTRADAY'
+        symbol:sym, side, qty:parseInt(qty)||1, orderType:ot,
+        price:parseFloat(price)||0, productType:'INTRADAY'
       });
-      setRealRes(r);
-      setHist(p=>[{...r, real:true},...p].slice(0,10));
+      setRealRes(r); setHist(p=>[{...r,real:true},...p].slice(0,10));
     } catch(e) { setRealRes({ success:false, error:e.message }); }
     setRealLoad(false);
   };
 
-  // Parse key fund fields
-  const equity   = funds?.find(f => f.title === 'Equity' || f.title === 'Total Balance' || f.id === 'equity');
-  const avail    = funds?.find(f => f.title === 'Available Balance' || f.id === 'free_balance' || f.title === 'Available Margin');
-  const used     = funds?.find(f => f.title === 'Used Margin' || f.id === 'utilized_amount');
-  const total    = funds?.find(f => f.title === 'Total Balance' || f.id === 'total_balance');
-
-  const getVal = (obj) => {
-    if (!obj) return null;
-    return obj.equityAmount ?? obj.value ?? obj.currentValue ?? obj.val ?? null;
+  // ── Crypto test order ──────────────────────────────────────
+  const sendCrypto = async () => {
+    if (!cApi) { setCres({ success:false, error:'Select a Delta Exchange API first' }); return; }
+    if (!window.confirm(`Place REAL ${cSide.toUpperCase()} order: ${cQty} × ${cSym} on Delta Exchange?`)) return;
+    setCload(true); setCres(null);
+    try {
+      const r = await api.post('/api/delta/order', {
+        apiId: cApi, symbol: cSym, side: cSide, size: parseInt(cQty)||1
+      });
+      setCres(r);
+    } catch(e) { setCres({ success:false, error:e.message }); }
+    setCload(false);
   };
 
   return (
-    <div style={{ padding:'22px',height:'100%',overflowY:'auto' }}>
-      <div style={{ marginBottom:16 }}>
-        <h2 style={{ fontSize:19,fontWeight:800,color:SB,marginBottom:4 }}>Test Signal</h2>
-        <div style={{ display:'flex',alignItems:'center',gap:8 }}>
-          <p style={{ fontSize:13,color:T2 }}>Standalone test — bypasses master toggle</p>
-          <Badge text="STANDALONE" color="#8B5CF6" />
-        </div>
+    <div style={{ padding:'22px', height:'100%', overflowY:'auto' }}>
+      <h2 style={{ fontSize:19,fontWeight:800,color:SB,marginBottom:4 }}>Test Signal</h2>
+      <p style={{ fontSize:13,color:T2,marginBottom:14 }}>Test order placement for Indian brokers and Crypto exchanges</p>
+
+      {/* Tab switcher */}
+      <div style={{ display:'flex',gap:2,marginBottom:18,background:'#F1F5F9',borderRadius:10,padding:3 }}>
+        {[{id:'indian',label:'🇮🇳 Indian'},{id:'crypto',label:'₿ Crypto'}].map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)} style={{
+            flex:1,padding:'8px 0',borderRadius:8,border:'none',cursor:'pointer',
+            fontWeight:700,fontSize:13,
+            background:tab===t.id?'#fff':'transparent',
+            color:tab===t.id?SB:T2,
+            boxShadow:tab===t.id?'0 1px 4px rgba(0,0,0,.08)':'none' }}>
+            {t.label}
+          </button>
+        ))}
       </div>
 
-      {/* ── BALANCE CARD ── */}
-      <div style={{ marginBottom:18 }}>
-        <SCard title="Current Balance — Fyers Account" icon={Shield}
-          action={
-            <button onClick={fetchBalance} disabled={fLoad} style={{
-              display:'flex',alignItems:'center',gap:5,padding:'4px 10px',borderRadius:6,
-              border:`1px solid ${BD}`,background:'#fff',color:T2,fontSize:11,cursor:'pointer' }}>
-              <RefreshCw size={11} style={{ animation:fLoad?'spin 1s linear infinite':'none' }} />
-              Refresh
-            </button>
-          }>
-          {!authStatus?.isAuthenticated ? (
-            <div style={{ display:'flex',alignItems:'center',gap:8,padding:'10px 14px',
-              borderRadius:9,background:'#FFF7ED',border:'1px solid #FED7AA' }}>
-              <AlertCircle size={15} color={W} />
-              <span style={{ fontSize:13,color:W,fontWeight:600 }}>
-                Fyers not connected. Go to API Credentials to login first.
-              </span>
-            </div>
-          ) : fLoad ? (
-            <div style={{ display:'flex',alignItems:'center',justifyContent:'center',gap:8,padding:'18px 0',color:T2 }}>
-              <RefreshCw size={14} style={{ animation:'spin 1s linear infinite' }} />
-              <span style={{ fontSize:13 }}>Fetching balance from Fyers…</span>
-            </div>
-          ) : fErr ? (
-            <div style={{ padding:'10px 14px',borderRadius:9,background:'#FFF1F2',
-              border:'1px solid #FECDD3',fontSize:13,color:R }}>{fErr}</div>
-          ) : funds && funds.length > 0 ? (
-            <div>
-              {/* Main balance grid */}
-              <div style={{ display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,marginBottom:12 }}>
-                {funds.slice(0,8).map((f,i) => {
-                  const val = f.equityAmount ?? f.value ?? f.currentValue ?? f.val ?? 0;
-                  const isPos = parseFloat(val) >= 0;
-                  return (
-                    <div key={i} style={{ background:'#F8FAFC',border:`1px solid ${BD}`,
-                      borderRadius:9,padding:'10px 13px' }}>
-                      <div style={{ fontSize:10,color:T2,fontWeight:600,marginBottom:4,
-                        textTransform:'uppercase',letterSpacing:.3 }}>
-                        {f.title || f.id || `Fund ${i+1}`}
-                      </div>
-                      <div className="mono" style={{ fontSize:16,fontWeight:700,
-                        color: typeof val==='number'&&val<0 ? R : T1 }}>
-                        ₹{typeof val==='number' ? val.toLocaleString('en-IN',{maximumFractionDigits:2}) : val}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              {/* Raw fund table */}
-              <details style={{ cursor:'pointer' }}>
-                <summary style={{ fontSize:12,color:T2,fontWeight:600,userSelect:'none',marginBottom:6 }}>
-                  View all fund details ({funds.length} entries)
-                </summary>
-                <div style={{ border:`1px solid ${BD}`,borderRadius:8,overflow:'hidden',marginTop:6 }}>
-                  <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',
-                    background:'#F8FAFC',padding:'6px 10px',borderBottom:`1px solid ${BD}` }}>
-                    <span style={{ fontSize:11,fontWeight:700,color:T2 }}>Fund Type</span>
-                    <span style={{ fontSize:11,fontWeight:700,color:T2 }}>Amount (₹)</span>
-                  </div>
-                  {funds.map((f,i) => {
-                    const val = f.equityAmount ?? f.value ?? f.currentValue ?? f.val ?? '—';
-                    return (
-                      <div key={i} style={{ display:'grid',gridTemplateColumns:'1fr 1fr',
-                        padding:'7px 10px',borderBottom:`1px solid ${BD}`,
-                        background:i%2===0?'#fff':'#FAFBFF' }}>
-                        <span style={{ fontSize:12,color:T1 }}>{f.title || f.id || `Entry ${i+1}`}</span>
-                        <span className="mono" style={{ fontSize:12,fontWeight:600,
-                          color:typeof val==='number'&&val<0?R:T1 }}>
-                          {typeof val==='number'?`₹${val.toLocaleString('en-IN',{maximumFractionDigits:2})}`:val}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </details>
-            </div>
-          ) : (
-            <div style={{ textAlign:'center',padding:'16px 0',color:T2,fontSize:13 }}>
-              No fund data. Click Refresh to load.
-            </div>
-          )}
-        </SCard>
-      </div>
-
-      <div style={{ display:'grid',gridTemplateColumns:'380px 1fr',gap:18,alignItems:'start' }}>
-        <div>
-          <SCard title="Signal Builder" icon={Send}>
-            <div style={{ marginBottom:12 }}>
-              <label style={{ fontSize:12,fontWeight:600,color:T2,display:'block',marginBottom:5 }}>Stock</label>
-              <StockDropdown value={sym} onChange={setSym} />
-            </div>
-            <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12 }}>
-              {['BUY','SELL'].map(s=>(
-                <button key={s} onClick={()=>setSide(s)} style={{
-                  padding:'9px',borderRadius:8,fontWeight:700,
-                  border:`2px solid ${s==='BUY'?G:R}`,
-                  background:side===s?(s==='BUY'?G:R):'#fff',
-                  color:side===s?'#fff':(s==='BUY'?G:R),cursor:'pointer',
-                  display:'flex',alignItems:'center',justifyContent:'center',gap:5 }}>
-                  {s==='BUY'?<ArrowUpRight size={14}/>:<ArrowDownRight size={14}/>}{s}
-                </button>
-              ))}
-            </div>
-            <SelectField label="Order Type" value={ot} onChange={setOt}
-              options={['MARKET','LIMIT','STOP_LOSS','STOP_LOSS_MARKET'].map(v=>({value:v,label:v}))} />
-            <Field label="Quantity" value={qty} onChange={setQty} type="number" />
-            {ot!=='MARKET' && <Field label="Price ₹" value={price} onChange={setPrice} prefix="₹" type="number"
-              placeholder={INDIAN_STOCKS.find(s=>s.symbol===sym)?.price?.toFixed(2)} />}
-            {/* Simulated test */}
-            <button onClick={send} disabled={load||!sym||!qty} style={{
-              width:'100%',padding:'10px',borderRadius:9,fontWeight:700,fontSize:13,
-              border:`2px solid #8B5CF6`,cursor:'pointer',background:'#F5F3FF',color:'#8B5CF6',
-              display:'flex',alignItems:'center',justifyContent:'center',gap:8,marginBottom:7,
-              opacity:(load||!sym||!qty)?0.6:1 }}>
-              {load?<RefreshCw size={13} style={{ animation:'spin 1s linear infinite' }}/>:<Zap size={13}/>}
-              Test Signal (Simulated — No Real Order)
-            </button>
-            {/* Real order */}
-            <button onClick={sendReal} disabled={realLoad||!sym||!qty||!authStatus?.isAuthenticated} style={{
-              width:'100%',padding:'10px',borderRadius:9,fontWeight:700,fontSize:13,border:'none',
-              cursor:'pointer',background:side==='BUY'?G:R,color:'#fff',
-              display:'flex',alignItems:'center',justifyContent:'center',gap:8,
-              opacity:(realLoad||!sym||!qty)?0.6:1 }}>
-              {realLoad?<RefreshCw size={13} style={{ animation:'spin 1s linear infinite' }}/>:<Send size={13}/>}
-              {side==='BUY'?'▲':'▼'} Place REAL {side} Order at Fyers
-            </button>
-            {!authStatus?.isAuthenticated && (
-              <div style={{ fontSize:11,color:W,textAlign:'center',marginTop:4 }}>
-                Login to Fyers first to place real orders
-              </div>
-            )}
-          </SCard>
-          {res && (
-            <div style={{ border:`1.5px solid ${'#8B5CF6'}`,borderRadius:10,padding:'12px 14px',
-              background:'#F5F3FF',marginBottom:8 }}>
-              <div style={{ display:'flex',alignItems:'center',gap:7,marginBottom:6 }}>
-                <Zap size={14} color="#8B5CF6"/>
-                <span style={{ fontWeight:700,color:'#8B5CF6' }}>Test Signal Sent</span>
-                <Badge text="SIMULATED" color="#8B5CF6" />
-              </div>
-              {res.orderId && <div className="mono" style={{ fontSize:11,color:T2 }}>ID: {res.orderId}</div>}
-              {res.error && <div style={{ fontSize:12,color:R }}>{res.error}</div>}
-            </div>
-          )}
-          {realRes && (
-            <div style={{ border:`1.5px solid ${realRes.success?G:R}`,borderRadius:10,padding:'12px 14px',
-              background:realRes.success?'#F0FDF4':'#FFF1F2' }}>
-              <div style={{ display:'flex',alignItems:'center',gap:7,marginBottom:6 }}>
-                {realRes.success?<CheckCircle size={16} color={G}/>:<XCircle size={16} color={R}/>}
-                <span style={{ fontWeight:700,color:realRes.success?G:R }}>
-                  {realRes.success?'✅ Real Order Placed at Fyers!':'❌ Order Failed'}
-                </span>
-              </div>
-              {realRes.orderId && (
-                <div className="mono" style={{ fontSize:12,color:T1,fontWeight:700 }}>
-                  Order ID: {realRes.orderId}
+      {/* ── INDIAN TAB ───────────────────────────────────── */}
+      {tab==='indian' && (
+        <div style={{ display:'grid',gridTemplateColumns:'360px 1fr',gap:16,alignItems:'start' }}>
+          <div>
+            <SCard title="Signal Builder" icon={Zap}>
+              {!authStatus?.isAuthenticated && (
+                <div style={{ padding:'10px 12px',borderRadius:8,background:'#FFF7ED',
+                  border:'1px solid #FED7AA',marginBottom:12,fontSize:12,color:W }}>
+                  ⚠️ Login to Fyers first to place real orders
                 </div>
               )}
-              {realRes.error && <div style={{ fontSize:12,color:R,marginTop:4 }}>{realRes.error}</div>}
-              <div style={{ fontSize:11,color:T2,marginTop:4 }}>
-                Check Fyers app → Order Book to confirm
+
+              {/* API selector */}
+              {indianApis.length > 0 && (
+                <div style={{ marginBottom:12 }}>
+                  <label style={{ fontSize:12,fontWeight:600,color:T2,display:'block',marginBottom:5 }}>Select API</label>
+                  <select value={selApi} onChange={e=>setSelApi(e.target.value)}
+                    style={{ width:'100%',padding:'8px 10px',border:`1.5px solid ${BD}`,
+                      borderRadius:8,fontSize:13,color:T1,background:'#fff' }}>
+                    <option value="">Default (active Fyers)</option>
+                    {indianApis.map(a=>(
+                      <option key={a.id} value={a.id}>{a.name} — {a.brokerId}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div style={{ marginBottom:10 }}>
+                <label style={{ fontSize:12,fontWeight:600,color:T2,display:'block',marginBottom:5 }}>Stock</label>
+                <StockDropdown value={sym} onChange={setSym} />
+              </div>
+              <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:7,marginBottom:10 }}>
+                {['BUY','SELL'].map(s=>(
+                  <button key={s} onClick={()=>setSide(s)} style={{
+                    padding:'9px',borderRadius:8,fontWeight:700,
+                    border:`2px solid ${s==='BUY'?G:R}`,
+                    background:side===s?(s==='BUY'?G:R):'#fff',
+                    color:side===s?'#fff':(s==='BUY'?G:R),cursor:'pointer' }}>
+                    {s==='BUY'?'▲ BUY':'▼ SELL'}
+                  </button>
+                ))}
+              </div>
+              <SelectField label="Order Type" value={ot} onChange={setOt}
+                options={['MARKET','LIMIT','STOP_LOSS','STOP_LOSS_MARKET'].map(v=>({value:v,label:v}))} />
+              <Field label="Quantity" value={qty} onChange={setQty} type="number" />
+              {ot!=='MARKET' && <Field label="Price ₹" value={price} onChange={setPrice} prefix="₹" type="number" />}
+
+              <button onClick={send} disabled={load} style={{
+                width:'100%',padding:'9px',borderRadius:8,fontWeight:700,fontSize:13,
+                border:`2px solid #8B5CF6`,background:'#F5F3FF',color:'#8B5CF6',
+                cursor:'pointer',marginBottom:7,display:'flex',alignItems:'center',
+                justifyContent:'center',gap:6 }}>
+                {load?<RefreshCw size={13} style={{animation:'spin 1s linear infinite'}}/>:<Zap size={13}/>}
+                Test Signal (Simulated)
+              </button>
+              <button onClick={sendReal} disabled={realLoad||!authStatus?.isAuthenticated} style={{
+                width:'100%',padding:'9px',borderRadius:8,fontWeight:700,fontSize:13,
+                border:'none',background:side==='BUY'?G:R,color:'#fff',
+                cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:6,
+                opacity:authStatus?.isAuthenticated?1:0.6 }}>
+                {realLoad?<RefreshCw size={13} style={{animation:'spin 1s linear infinite'}}/>:<Send size={13}/>}
+                {side==='BUY'?'▲':'▼'} Place REAL {side} Order
+              </button>
+            </SCard>
+
+            {res && (
+              <div style={{ border:`1.5px solid #8B5CF6`,borderRadius:10,padding:'11px 13px',
+                background:'#F5F3FF',marginBottom:8 }}>
+                <div style={{ fontWeight:700,color:'#8B5CF6',marginBottom:4 }}>✓ Test Signal Sent</div>
+                {res.orderId && <div className="mono" style={{ fontSize:11,color:T2 }}>ID: {res.orderId}</div>}
+                {res.error && <div style={{ fontSize:12,color:R }}>{res.error}</div>}
+              </div>
+            )}
+            {realRes && (
+              <div style={{ border:`1.5px solid ${realRes.success?G:R}`,borderRadius:10,padding:'11px 13px',
+                background:realRes.success?'#F0FDF4':'#FFF1F2' }}>
+                <div style={{ fontWeight:700,color:realRes.success?G:R,marginBottom:4 }}>
+                  {realRes.success?'✅ Real Order Placed!':'❌ Order Failed'}
+                </div>
+                {realRes.orderId && <div className="mono" style={{ fontSize:11,color:T1,fontWeight:700 }}>ID: {realRes.orderId}</div>}
+                {realRes.error && <div style={{ fontSize:12,color:R,marginTop:3 }}>{realRes.error}</div>}
+              </div>
+            )}
+          </div>
+
+          {/* Signal History */}
+          <SCard title="Signal History" icon={Clock}>
+            {hist.length===0
+              ? <div style={{ textAlign:'center',color:T2,fontSize:13,padding:'24px 0' }}>No signals yet</div>
+              : hist.map((h,i)=>(
+                <div key={i} style={{ display:'flex',alignItems:'center',justifyContent:'space-between',
+                  padding:'8px 10px',borderRadius:8,marginBottom:5,background:'#F8FAFC',border:`1px solid ${BD}` }}>
+                  <div style={{ display:'flex',alignItems:'center',gap:7 }}>
+                    <Badge text={h.order?.side||h.real?'REAL':'SIM'} color={h.order?.side==='BUY'?G:h.order?.side==='SELL'?R:'#8B5CF6'} />
+                    <div>
+                      <div style={{ fontSize:12,fontWeight:600 }}>{shortSym(h.order?.symbol||sym)} × {h.order?.qty||qty}</div>
+                      <div className="mono" style={{ fontSize:10,color:T2 }}>{h.orderId||'—'}</div>
+                    </div>
+                  </div>
+                  <Badge text={h.success?'OK':'FAIL'} color={h.success?G:R} />
+                </div>
+              ))
+            }
+          </SCard>
+        </div>
+      )}
+
+      {/* ── CRYPTO TAB ───────────────────────────────────── */}
+      {tab==='crypto' && (
+        <div style={{ display:'grid',gridTemplateColumns:'360px 1fr',gap:16,alignItems:'start' }}>
+          <div>
+            <SCard title="Delta Exchange Signal" icon={Zap}>
+              {cryptoApis.length === 0 ? (
+                <div style={{ padding:'16px',background:'#FFF7ED',borderRadius:8,
+                  border:'1px solid #FED7AA',fontSize:12,color:W }}>
+                  ⚠️ No Delta Exchange API added. Go to API Credentials → Add API → Crypto → Delta Exchange
+                </div>
+              ) : (
+                <>
+                  <div style={{ marginBottom:12 }}>
+                    <label style={{ fontSize:12,fontWeight:600,color:T2,display:'block',marginBottom:5 }}>Delta Exchange API</label>
+                    <select value={cApi} onChange={e=>setCapi(e.target.value)}
+                      style={{ width:'100%',padding:'8px 10px',border:`1.5px solid ${BD}`,
+                        borderRadius:8,fontSize:13,color:T1,background:'#fff' }}>
+                      <option value="">Select API</option>
+                      {cryptoApis.map(a=>(
+                        <option key={a.id} value={String(a.id)}>{a.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div style={{ marginBottom:12 }}>
+                    <label style={{ fontSize:12,fontWeight:600,color:T2,display:'block',marginBottom:5 }}>Crypto Pair</label>
+                    <select value={cSym} onChange={e=>setCsym(e.target.value)}
+                      style={{ width:'100%',padding:'8px 10px',border:`1.5px solid ${BD}`,
+                        borderRadius:8,fontSize:13,color:T1,background:'#fff' }}>
+                      {CRYPTO_PAIRS.map(p=><option key={p} value={p}>{p}</option>)}
+                    </select>
+                  </div>
+
+                  <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:7,marginBottom:10 }}>
+                    {['buy','sell'].map(s=>(
+                      <button key={s} onClick={()=>setCside(s)} style={{
+                        padding:'9px',borderRadius:8,fontWeight:700,textTransform:'uppercase',
+                        border:`2px solid ${s==='buy'?G:R}`,
+                        background:cSide===s?(s==='buy'?G:R):'#fff',
+                        color:cSide===s?'#fff':(s==='buy'?G:R),cursor:'pointer' }}>
+                        {s==='buy'?'▲ BUY':'▼ SELL'}
+                      </button>
+                    ))}
+                  </div>
+
+                  <Field label="Quantity (contracts)" value={cQty} onChange={setCqty} type="number" />
+
+                  <button onClick={sendCrypto} disabled={cLoad||!cApi} style={{
+                    width:'100%',padding:'10px',borderRadius:9,fontWeight:700,fontSize:13,
+                    border:'none',background:cSide==='buy'?'#8B5CF6':'#EC4899',color:'#fff',
+                    cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:6,
+                    opacity:cApi?1:0.5 }}>
+                    {cLoad?<RefreshCw size={13} style={{animation:'spin 1s linear infinite'}}/>:<Send size={13}/>}
+                    Place {cSide.toUpperCase()} on Delta Exchange
+                  </button>
+                </>
+              )}
+
+              {cRes && (
+                <div style={{ marginTop:10,border:`1.5px solid ${cRes.success?G:R}`,
+                  borderRadius:10,padding:'11px 13px',
+                  background:cRes.success?'#F0FDF4':'#FFF1F2' }}>
+                  <div style={{ fontWeight:700,color:cRes.success?G:R,marginBottom:4 }}>
+                    {cRes.success?'✅ Crypto Order Placed!':'❌ Order Failed'}
+                  </div>
+                  {cRes.orderId && <div className="mono" style={{ fontSize:11 }}>ID: {cRes.orderId}</div>}
+                  {cRes.error && <div style={{ fontSize:12,color:R }}>{cRes.error}</div>}
+                </div>
+              )}
+            </SCard>
+          </div>
+
+          <SCard title="About Delta Exchange" icon={Info}>
+            <div style={{ fontSize:12,color:T2,lineHeight:1.7 }}>
+              <div style={{ marginBottom:8,fontWeight:700,color:T1 }}>₿ Crypto markets are 24/7</div>
+              <div>• No market hours restriction</div>
+              <div>• Leverage up to 100x available</div>
+              <div>• USDT-settled contracts</div>
+              <div>• Orders go directly to Delta Exchange</div>
+              <div style={{ marginTop:12,padding:'9px',background:'#F5F3FF',borderRadius:8,color:'#7C3AED' }}>
+                Make sure your Delta API has <b>Order Placement</b> permission enabled.
               </div>
             </div>
-          )}
+          </SCard>
         </div>
-        <SCard title="Signal History" icon={Clock}>
-          {hist.length===0
-            ? <div style={{ textAlign:'center',color:T2,fontSize:13,padding:'24px 0' }}>No signals sent yet</div>
-            : hist.map((h,i)=>(
-              <div key={i} style={{ display:'flex',alignItems:'center',justifyContent:'space-between',
-                padding:'9px 11px',borderRadius:8,marginBottom:5,background:'#F8FAFC',border:`1px solid ${BD}` }}>
-                <div style={{ display:'flex',alignItems:'center',gap:7 }}>
-                  <Badge text={h.order?.side||'?'} color={h.order?.side==='BUY'?G:R} />
-                  <div>
-                    <div style={{ fontSize:12,fontWeight:600 }}>{shortSym(h.order?.symbol||'')} × {h.order?.qty}</div>
-                    <div className="mono" style={{ fontSize:10,color:T2 }}>{h.orderId}</div>
-                  </div>
-                </div>
-                <Badge text={h.order?.status||'?'} color={h.success?G:R} />
-              </div>
-            ))}
-        </SCard>
-      </div>
+      )}
     </div>
   );
 }
 
-// ── Risk & Reward View ────────────────────────────────────
-function RiskRewardView({ rrConfig, setRrConfig, selectedSymbols, ticks, authStatus, funds: globalFunds, setFunds: setGlobalFunds }) {
-  const [bLoad, setBLoad] = useState(false);
+function RiskRewardView({ rrConfig, setRrConfig, selectedSymbols, ticks, authStatus, funds: globalFunds, setFunds: setGlobalFunds, savedApis }) {
+  const [bLoad,   setBLoad]   = useState(false);
+  const [tab,     setTab]     = useState('indian');
   const funds = globalFunds || [];
 
-  // ── Fetch balance and update capital ─────────────────────
+  // ── Fetch Fyers balance ───────────────────────────────────
   const fetchAndFill = async () => {
     setBLoad(true);
     try {
       const r = await api.get('/api/portfolio/funds');
       if (r.success) {
         if (r.funds?.length > 0) setGlobalFunds(r.funds);
-        // Use backend-computed availableBalance
-        let bal = r.availableBalance || 0;
-        // Brute-force fallback
-        if (bal === 0 && r.funds?.length > 0) {
-          for (const f of r.funds) {
-            for (const key of Object.keys(f)) {
-              const v = parseFloat(f[key]);
-              if (!isNaN(v) && v > 100) { bal = Math.max(bal, v); }
-            }
-          }
-        }
-        if (bal > 0) setRrConfig(p => ({ ...p, capital: Math.floor(bal) }));
+        const bal = parseFloat(r.availableBalance||0);
+        if (bal > 100) setRrConfig(p=>({...p, capital: Math.floor(bal)}));
       }
     } catch(e) {}
     setBLoad(false);
   };
 
-  // Auto-fetch on mount
-  useEffect(() => {
-    if (authStatus?.isAuthenticated) fetchAndFill();
-  }, [authStatus?.isAuthenticated]);
+  useEffect(()=>{ if(authStatus?.isAuthenticated) fetchAndFill(); },[authStatus?.isAuthenticated]);
 
-  // Use rrConfig DIRECTLY — no local copy — always in sync
   const capital     = rrConfig.capital     || 50000;
   const leverage    = rrConfig.leverage    || 5;
   const riskPct     = rrConfig.riskPct     || 2;
   const rrRatio     = rrConfig.rrRatio     || 2;
   const maxSLPerDay = rrConfig.maxSLPerDay || 3;
-
   const ec  = capital * leverage;
-  const rpt = (ec * riskPct) / 100;
+  const rpt = ec * riskPct / 100;
   const dll = rpt * maxSLPerDay;
+  const update = (field, val) => setRrConfig(p=>({...p, [field]:val}));
+  const save   = async () => { try { await api.post('/api/risk/config', rrConfig); } catch(e){} };
 
-  const update = (field, val) => setRrConfig(p => ({ ...p, [field]: val }));
-
-  const save = async () => {
-    try { await api.post('/api/risk/config', rrConfig); } catch(e) {}
-  };
+  const indianApis  = (savedApis||[]).filter(a=>a.category==='indian'&&a.enabled);
+  const cryptoApis  = (savedApis||[]).filter(a=>a.category==='crypto'&&a.enabled);
 
   return (
     <div style={{ padding:'22px',height:'100%',overflowY:'auto' }}>
       <h2 style={{ fontSize:19,fontWeight:800,color:SB,marginBottom:4 }}>Risk & Reward Calculator</h2>
-      <p style={{ fontSize:13,color:T2,marginBottom:16 }}>Configure position sizing & rule-based risk controls</p>
-      <div style={{ display:'grid',gridTemplateColumns:'400px 1fr',gap:18,alignItems:'start' }}>
-        <div>
-          <SCard title="Capital & Leverage" icon={Calculator}>
-            <Field label="Invested Capital (₹)" value={capital}
-              onChange={v=>update('capital',parseFloat(v)||0)} prefix="₹" type="number" />
-            <SelectField label="Intraday Leverage" value={String(leverage)}
-              onChange={v=>update('leverage',parseInt(v))}
-              options={[1,2,3,4,5].map(v=>({value:String(v),label:`${v}x Leverage`}))}
-              tooltip="MIS leverage multiplier from Fyers" />
-            {/* Balance display — always visible */}
-            <div style={{ background: funds.length>0?'#F0FDF4':'#F8FAFC',
-              border:`1px solid ${funds.length>0?'#BBF7D0':BD}`,borderRadius:8,
-              padding:'10px 12px',marginBottom:10 }}>
-              <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6 }}>
-                <span style={{ fontSize:11,fontWeight:700,color:funds.length>0?G:T2 }}>
-                  {funds.length>0?'✓ Fyers Balance':'Fyers Balance'}
-                </span>
-                <button onClick={fetchAndFill} disabled={bLoad} style={{ padding:'3px 10px',
-                  borderRadius:5,border:`1px solid ${SB}`,background:SB,
-                  color:'#fff',fontSize:11,cursor:'pointer',fontWeight:600 }}>
-                  {bLoad?'Fetching...':'↺ Sync Balance'}
-                </button>
-              </div>
-              {funds.length > 0 ? (
-                <div style={{ display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:6 }}>
-                  {funds.slice(0,6).map((f,i)=>{
-                    const v = parseFloat(f.equityAmount??f.value??f.currentValue??f.val??0);
-                    return (
-                      <div key={i} style={{ background:'#fff',borderRadius:6,padding:'5px 8px',
-                        border:`1px solid ${BD}` }}>
-                        <div style={{ fontSize:9,color:T2,marginBottom:2 }}>{f.title||f.id||`Fund ${i+1}`}</div>
-                        <div className="mono" style={{ fontSize:12,fontWeight:700,color:v>0?T1:T2 }}>
-                          ₹{v.toLocaleString('en-IN',{maximumFractionDigits:0})}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div style={{ fontSize:12,color:T2 }}>
-                  {authStatus?.isAuthenticated
-                    ? 'Click Sync Balance to fetch from Fyers'
-                    : 'Login to Fyers first to sync balance'}
-                </div>
-              )}
-            </div>
-            <div style={{ background:'#EEF2FF',borderRadius:8,padding:'10px 13px',
-              display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4 }}>
-              <span style={{ fontSize:13,color:SB }}>Effective Capital</span>
-              <span className="mono" style={{ fontSize:18,fontWeight:700,color:SB }}>{fmtINR(ec)}</span>
-            </div>
-          </SCard>
+      <p style={{ fontSize:13,color:T2,marginBottom:14 }}>Configure position sizing per market</p>
 
-          <SCard title="Risk Configuration" icon={Shield}>
-            <div style={{ marginBottom:13 }}>
-              <div style={{ display:'flex',justifyContent:'space-between',marginBottom:5 }}>
-                <label style={{ fontSize:12,fontWeight:600,color:T2 }}>Risk % Per Trade</label>
-                <span className="mono" style={{ fontSize:13,fontWeight:700,color:R }}>{riskPct}%</span>
-              </div>
-              <input type="range" min="0.5" max="10" step="0.5" value={riskPct}
-                onChange={e=>update('riskPct',parseFloat(e.target.value))}
-                style={{ width:'100%',accentColor:SB }} />
-              <div style={{ display:'flex',justifyContent:'space-between',fontSize:11,color:T2,marginTop:3 }}>
-                <span>0.5% (Safe)</span>
-                <span style={{ color:rpt>5000?R:T2 }}>Risk/Trade: {fmtINR(rpt)}</span>
-                <span>10% (Aggressive)</span>
-              </div>
-            </div>
-            <SelectField label="Risk : Reward Ratio" value={String(rrRatio)}
-              onChange={v=>update('rrRatio',parseFloat(v))}
-              options={[1,1.5,2,2.5,3,3.5,4].map(v=>({value:String(v),label:`1:${v}`}))}
-              tooltip="For every ₹1 risked, target ₹R reward" />
-          </SCard>
-
-          <SCard title="Rule-Based Controls" icon={AlertTriangle}>
-            <Field label="Max SL Hits / Day" value={maxSLPerDay}
-              onChange={v=>update('maxSLPerDay',parseInt(v)||1)} type="number"
-              tooltip="Trading halts after this many SL hits (max 3 recommended)" />
-            <div style={{ background:'#FFF7ED',border:`1px solid #FED7AA`,borderRadius:8,
-              padding:'9px 12px',marginBottom:10,display:'flex',justifyContent:'space-between',alignItems:'center' }}>
-              <div>
-                <div style={{ fontSize:11,color:W,fontWeight:600 }}>Daily Risk Cap</div>
-                <div style={{ fontSize:11,color:T2 }}>Halt when this ₹ loss is hit</div>
-              </div>
-              <span className="mono" style={{ fontSize:17,fontWeight:700,color:W }}>{fmtINR(dll)}</span>
-            </div>
-          </SCard>
-
-          <button onClick={save} style={{
-            width:'100%',padding:'11px',borderRadius:9,border:'none',background:SB,
-            color:'#fff',fontWeight:700,fontSize:14,cursor:'pointer',
-            display:'flex',alignItems:'center',justifyContent:'center',gap:8 }}>
-            <CheckCircle size={14} /> Save & Apply to Bot
+      {/* Tab switcher */}
+      <div style={{ display:'flex',gap:2,marginBottom:18,background:'#F1F5F9',borderRadius:10,padding:3 }}>
+        {[{id:'indian',label:'🇮🇳 Indian'},{id:'crypto',label:'₿ Crypto'}].map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)} style={{
+            flex:1,padding:'8px 0',borderRadius:8,border:'none',cursor:'pointer',
+            fontWeight:700,fontSize:13,
+            background:tab===t.id?'#fff':'transparent',color:tab===t.id?SB:T2,
+            boxShadow:tab===t.id?'0 1px 4px rgba(0,0,0,.08)':'none' }}>
+            {t.label}
           </button>
-        </div>
-
-        <div>
-          <SCard title="Per-Stock Position Calculator" icon={BarChart2}>
-            <div style={{ border:`1px solid ${BD}`,borderRadius:8,overflow:'hidden' }}>
-              <div style={{ display:'grid',gridTemplateColumns:'1.5fr 1fr 1fr 1fr 1fr',
-                background:'#F8FAFC',padding:'7px 10px',borderBottom:`1px solid ${BD}` }}>
-                {['Symbol','CMP','SL Pts','Qty','Trade Value'].map(h=>(
-                  <div key={h} style={{ fontSize:11,fontWeight:700,color:T2 }}>{h}</div>
-                ))}
-              </div>
-              {selectedSymbols.filter(Boolean).map((sym,i)=>{
-                const si   = INDIAN_STOCKS.find(s=>s.symbol===sym);
-                const cmp  = ticks[sym]?.ltp || si?.price || 1000;
-                const slPts= cmp * (riskPct/100);
-                const qty  = Math.max(1, Math.floor(rpt/slPts));
-                return (
-                  <div key={i} style={{ display:'grid',gridTemplateColumns:'1.5fr 1fr 1fr 1fr 1fr',
-                    padding:'7px 10px',borderBottom:`1px solid ${BD}`,background:i%2===0?'#fff':'#FAFBFF' }}>
-                    <div style={{ fontWeight:700,fontSize:12 }}>{shortSym(sym)}</div>
-                    <div className="mono" style={{ fontSize:12 }}>₹{cmp.toFixed(0)}</div>
-                    <div className="mono" style={{ fontSize:12,color:R }}>₹{slPts.toFixed(1)}</div>
-                    <div className="mono" style={{ fontSize:12,fontWeight:700 }}>{qty}</div>
-                    <div className="mono" style={{ fontSize:12 }}>{fmtINR(cmp*qty)}</div>
-                  </div>
-                );
-              })}
-              {selectedSymbols.filter(Boolean).length===0 && (
-                <div style={{ padding:'16px',textAlign:'center',color:T2,fontSize:13 }}>
-                  Add stocks in Stock List to see calculations
-                </div>
-              )}
-            </div>
-          </SCard>
-        </div>
+        ))}
       </div>
+
+      {/* ── INDIAN TAB ───────────────────────────────────── */}
+      {tab==='indian' && (
+        <div>
+          {/* Common settings note */}
+          <div style={{ background:'#EEF2FF',borderRadius:9,padding:'9px 13px',marginBottom:14,
+            fontSize:12,color:SB,fontWeight:600 }}>
+            ℹ️ Risk, Reward and Max SL settings below apply to ALL Indian brokers
+          </div>
+
+          {/* Broker summary table */}
+          {indianApis.length > 0 && (
+            <SCard title="Broker Summary" icon={BarChart2}>
+              <div style={{ border:`1px solid ${BD}`,borderRadius:9,overflow:'hidden' }}>
+                <div style={{ display:'grid',gridTemplateColumns:'1.5fr 1.5fr 1fr 1fr 1.5fr 1fr',
+                  background:'#F8FAFC',padding:'8px 12px',borderBottom:`1px solid ${BD}` }}>
+                  {['Broker','API Connected','Actual Margin','Leverage','Eff. Capital','Risk/Trade'].map(h=>(
+                    <span key={h} style={{ fontSize:11,fontWeight:700,color:T2 }}>{h}</span>
+                  ))}
+                </div>
+                {indianApis.map((a,i)=>{
+                  const isConn = a.connected||(a.brokerId==='fyers'&&authStatus?.isAuthenticated);
+                  const margin = a.brokerId==='fyers'?capital:0;
+                  const aEc    = margin * leverage;
+                  const aRpt   = aEc * riskPct / 100;
+                  return (
+                    <div key={a.id} style={{ display:'grid',gridTemplateColumns:'1.5fr 1.5fr 1fr 1fr 1.5fr 1fr',
+                      padding:'9px 12px',borderBottom:`1px solid ${BD}`,background:i%2===0?'#fff':'#FAFBFF' }}>
+                      <div style={{ display:'flex',alignItems:'center',gap:7 }}>
+                        <div style={{ width:8,height:8,borderRadius:'50%',background:a.color }}/>
+                        <span style={{ fontWeight:700,fontSize:12 }}>{a.name}</span>
+                      </div>
+                      <div style={{ fontSize:12 }}>
+                        <span style={{ color:isConn?G:R,fontWeight:600 }}>{isConn?'✓ Connected':'✗ Offline'}</span>
+                        <div style={{ fontSize:10,color:T2 }}>{a.name}</div>
+                      </div>
+                      <div className="mono" style={{ fontSize:12 }}>{isConn?fmtINR(capital):'—'}</div>
+                      <div className="mono" style={{ fontSize:12 }}>{leverage}x</div>
+                      <div className="mono" style={{ fontSize:12,fontWeight:700,color:SB }}>{isConn?fmtINR(aEc):'—'}</div>
+                      <div className="mono" style={{ fontSize:12,color:R }}>{isConn?fmtINR(aRpt):'—'}</div>
+                    </div>
+                  );
+                })}
+                {indianApis.length===0 && (
+                  <div style={{ padding:'16px',textAlign:'center',color:T2,fontSize:12 }}>
+                    No Indian broker APIs added
+                  </div>
+                )}
+              </div>
+            </SCard>
+          )}
+
+          <div style={{ display:'grid',gridTemplateColumns:'400px 1fr',gap:16,alignItems:'start' }}>
+            <div>
+              <SCard title="Capital & Leverage" icon={Calculator}>
+                {/* Balance sync */}
+                <div style={{ background:funds.length>0?'#F0FDF4':'#F8FAFC',
+                  border:`1px solid ${funds.length>0?'#BBF7D0':BD}`,borderRadius:8,
+                  padding:'9px 12px',marginBottom:12 }}>
+                  <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:funds.length>0?6:0 }}>
+                    <span style={{ fontSize:11,fontWeight:700,color:funds.length>0?G:T2 }}>
+                      {funds.length>0?'✓ Fyers Balance':'Fyers Balance'}
+                    </span>
+                    <button onClick={fetchAndFill} disabled={bLoad} style={{ padding:'3px 10px',
+                      borderRadius:5,border:`1px solid ${SB}`,background:SB,
+                      color:'#fff',fontSize:11,cursor:'pointer',fontWeight:600 }}>
+                      {bLoad?'Fetching...':'↺ Sync'}
+                    </button>
+                  </div>
+                  {funds.length>0 && (
+                    <div style={{ display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:4 }}>
+                      {funds.slice(0,3).map((f,i)=>{
+                        const v = parseFloat(f.equityAmount??f.value??f.currentValue??0);
+                        return (
+                          <div key={i} style={{ background:'#fff',borderRadius:5,padding:'4px 7px',border:`1px solid ${BD}` }}>
+                            <div style={{ fontSize:9,color:T2 }}>{f.title||`Fund ${i+1}`}</div>
+                            <div className="mono" style={{ fontSize:11,fontWeight:700 }}>₹{v.toLocaleString('en-IN',{maximumFractionDigits:0})}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <Field label="Invested Capital (₹)" value={capital}
+                  onChange={v=>update('capital',parseFloat(v)||0)} prefix="₹" type="number" />
+                <SelectField label="Intraday Leverage" value={String(leverage)}
+                  onChange={v=>update('leverage',parseInt(v))}
+                  options={[1,2,3,4,5].map(v=>({value:String(v),label:`${v}x Leverage`}))} />
+                <div style={{ background:'#EEF2FF',borderRadius:8,padding:'10px 13px',
+                  display:'flex',justifyContent:'space-between',alignItems:'center' }}>
+                  <span style={{ fontSize:13,color:SB,fontWeight:600 }}>Effective Capital</span>
+                  <span className="mono" style={{ fontSize:18,fontWeight:700,color:SB }}>{fmtINR(ec)}</span>
+                </div>
+              </SCard>
+
+              <SCard title="Risk Configuration" icon={Shield}>
+                <div style={{ marginBottom:13 }}>
+                  <div style={{ display:'flex',justifyContent:'space-between',marginBottom:5 }}>
+                    <label style={{ fontSize:12,fontWeight:600,color:T2 }}>Risk % Per Trade</label>
+                    <span className="mono" style={{ fontSize:13,fontWeight:700,color:R }}>{riskPct}%</span>
+                  </div>
+                  <input type="range" min="0.5" max="10" step="0.5" value={riskPct}
+                    onChange={e=>update('riskPct',parseFloat(e.target.value))}
+                    style={{ width:'100%',accentColor:SB }} />
+                  <div style={{ display:'flex',justifyContent:'space-between',fontSize:11,color:T2,marginTop:3 }}>
+                    <span>0.5% (Safe)</span>
+                    <span style={{ color:rpt>5000?R:T2 }}>Risk/Trade: {fmtINR(rpt)}</span>
+                    <span>10% (Aggressive)</span>
+                  </div>
+                </div>
+                <SelectField label="Risk : Reward Ratio" value={String(rrRatio)}
+                  onChange={v=>update('rrRatio',parseFloat(v))}
+                  options={[1,1.5,2,2.5,3,3.5,4].map(v=>({value:String(v),label:`1:${v}`}))} />
+              </SCard>
+
+              <SCard title="Rule-Based Controls" icon={AlertTriangle}>
+                <Field label="Max SL Hits / Day" value={maxSLPerDay}
+                  onChange={v=>update('maxSLPerDay',parseInt(v)||1)} type="number" />
+                <div style={{ background:'#FFF7ED',border:`1px solid #FED7AA`,borderRadius:8,
+                  padding:'9px 12px',display:'flex',justifyContent:'space-between',alignItems:'center' }}>
+                  <div>
+                    <div style={{ fontSize:11,color:W,fontWeight:600 }}>Daily Risk Cap</div>
+                    <div style={{ fontSize:11,color:T2 }}>Halt when this ₹ loss is hit</div>
+                  </div>
+                  <span className="mono" style={{ fontSize:17,fontWeight:700,color:W }}>{fmtINR(dll)}</span>
+                </div>
+              </SCard>
+
+              <button onClick={save} style={{ width:'100%',padding:'11px',borderRadius:9,border:'none',
+                background:SB,color:'#fff',fontWeight:700,fontSize:14,cursor:'pointer',
+                display:'flex',alignItems:'center',justifyContent:'center',gap:8 }}>
+                <CheckCircle size={14}/> Save & Apply to Bot
+              </button>
+            </div>
+
+            {/* Per-stock calculator */}
+            <SCard title="Per-Stock Position Calculator" icon={BarChart2}>
+              <div style={{ border:`1px solid ${BD}`,borderRadius:8,overflow:'hidden' }}>
+                <div style={{ display:'grid',gridTemplateColumns:'1.5fr 1fr 1fr 1fr 1fr',
+                  background:'#F8FAFC',padding:'7px 10px',borderBottom:`1px solid ${BD}` }}>
+                  {['Symbol','CMP','SL Pts','Qty','Trade Value'].map(h=>(
+                    <div key={h} style={{ fontSize:11,fontWeight:700,color:T2 }}>{h}</div>
+                  ))}
+                </div>
+                {selectedSymbols.filter(Boolean).map((sym,i)=>{
+                  const si   = INDIAN_STOCKS.find(s=>s.symbol===sym);
+                  const cmp  = ticks[sym]?.ltp || si?.price || 1000;
+                  const slPts= cmp * (riskPct/100);
+                  const qty  = Math.max(1, Math.floor(rpt/slPts));
+                  return (
+                    <div key={i} style={{ display:'grid',gridTemplateColumns:'1.5fr 1fr 1fr 1fr 1fr',
+                      padding:'7px 10px',borderBottom:`1px solid ${BD}`,background:i%2===0?'#fff':'#FAFBFF' }}>
+                      <div style={{ fontWeight:700,fontSize:12 }}>{shortSym(sym)}</div>
+                      <div className="mono" style={{ fontSize:12 }}>₹{cmp.toFixed(0)}</div>
+                      <div className="mono" style={{ fontSize:12,color:R }}>₹{slPts.toFixed(1)}</div>
+                      <div className="mono" style={{ fontSize:12,fontWeight:700 }}>{qty}</div>
+                      <div className="mono" style={{ fontSize:12 }}>{fmtINR(cmp*qty)}</div>
+                    </div>
+                  );
+                })}
+                {selectedSymbols.filter(Boolean).length===0 && (
+                  <div style={{ padding:'16px',textAlign:'center',color:T2,fontSize:13 }}>
+                    Add stocks in Stock Selection to see calculations
+                  </div>
+                )}
+              </div>
+            </SCard>
+          </div>
+        </div>
+      )}
+
+      {/* ── CRYPTO TAB ───────────────────────────────────── */}
+      {tab==='crypto' && (
+        <div>
+          {cryptoApis.length === 0 ? (
+            <div style={{ textAlign:'center',padding:'40px 0',border:`2px dashed ${BD}`,borderRadius:12 }}>
+              <div style={{ fontSize:40,marginBottom:8 }}>₿</div>
+              <div style={{ fontWeight:600,fontSize:14,color:T1 }}>No Crypto APIs added</div>
+              <div style={{ fontSize:12,color:T2,marginTop:4 }}>Go to API Credentials → Add API → Crypto → Delta Exchange</div>
+            </div>
+          ) : (
+            <div>
+              <div style={{ background:'#F5F3FF',borderRadius:9,padding:'9px 13px',marginBottom:14,
+                fontSize:12,color:'#7C3AED',fontWeight:600 }}>
+                ℹ️ Crypto Risk & Reward settings are separate from Indian markets
+              </div>
+              {cryptoApis.map(a=>(
+                <div key={a.id} style={{ background:'#fff',border:`1.5px solid ${a.color}30`,
+                  borderRadius:12,padding:'18px',marginBottom:14 }}>
+                  <div style={{ display:'flex',alignItems:'center',gap:10,marginBottom:16 }}>
+                    <div style={{ width:36,height:36,borderRadius:9,background:a.color,
+                      display:'flex',alignItems:'center',justifyContent:'center',
+                      fontSize:16,fontWeight:800,color:'#fff' }}>₿</div>
+                    <div>
+                      <div style={{ fontWeight:700,fontSize:14,color:T1 }}>{a.name}</div>
+                      <div style={{ fontSize:11,color:a.connected?G:R,fontWeight:600 }}>
+                        {a.connected?'● Connected 24/7':'○ Not connected'}
+                      </div>
+                    </div>
+                    <div className="mono" style={{ marginLeft:'auto',fontSize:16,fontWeight:800,color:a.color }}>
+                      {a.availableBalance?`$${parseFloat(a.availableBalance).toFixed(2)}`:'—'}
+                    </div>
+                  </div>
+
+                  <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:14 }}>
+                    <div>
+                      <label style={{ fontSize:12,fontWeight:600,color:T2,display:'block',marginBottom:5 }}>Leverage</label>
+                      <select value={String(rrConfig.cryptoLeverage||10)}
+                        onChange={e=>update('cryptoLeverage',parseInt(e.target.value))}
+                        style={{ width:'100%',padding:'8px 10px',border:`1.5px solid ${BD}`,borderRadius:8,fontSize:13,color:T1,background:'#fff' }}>
+                        {[10,20,25,50,100].map(v=><option key={v} value={String(v)}>{v}x</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ fontSize:12,fontWeight:600,color:T2,display:'block',marginBottom:5 }}>Risk % / Trade</label>
+                      <input type="number" min="0.5" max="10" step="0.5"
+                        value={rrConfig.cryptoRiskPct||2}
+                        onChange={e=>update('cryptoRiskPct',parseFloat(e.target.value))}
+                        style={{ width:'100%',padding:'8px 10px',border:`1.5px solid ${BD}`,borderRadius:8,fontSize:13,color:T1,boxSizing:'border-box' }} />
+                    </div>
+                    <div>
+                      <label style={{ fontSize:12,fontWeight:600,color:T2,display:'block',marginBottom:5 }}>R:R Ratio</label>
+                      <select value={String(rrConfig.cryptoRRRatio||2)}
+                        onChange={e=>update('cryptoRRRatio',parseFloat(e.target.value))}
+                        style={{ width:'100%',padding:'8px 10px',border:`1.5px solid ${BD}`,borderRadius:8,fontSize:13,color:T1,background:'#fff' }}>
+                        {[1,1.5,2,2.5,3].map(v=><option key={v} value={String(v)}>1:{v}</option>)}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Computed values */}
+                  {a.availableBalance > 0 && (
+                    <div style={{ display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:9 }}>
+                      {[
+                        { label:'Available',   val:`$${parseFloat(a.availableBalance).toFixed(2)}`, color:G },
+                        { label:'Leverage',    val:`${rrConfig.cryptoLeverage||10}x`, color:SB },
+                        { label:'Eff. Capital',val:`$${(parseFloat(a.availableBalance)*(rrConfig.cryptoLeverage||10)).toFixed(2)}`, color:'#8B5CF6' },
+                        { label:'Risk/Trade',  val:`$${(parseFloat(a.availableBalance)*(rrConfig.cryptoLeverage||10)*(rrConfig.cryptoRiskPct||2)/100).toFixed(2)}`, color:R },
+                      ].map((s,i)=>(
+                        <div key={i} style={{ background:s.color+'10',border:`1px solid ${s.color}20`,
+                          borderRadius:8,padding:'9px 11px' }}>
+                          <div style={{ fontSize:10,color:T2,fontWeight:600,marginBottom:3 }}>{s.label}</div>
+                          <div className="mono" style={{ fontSize:14,fontWeight:700,color:s.color }}>{s.val}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div style={{ marginTop:12,borderTop:`1px solid ${BD}`,paddingTop:12 }}>
+                    <Field label="Max SL Hits / Day (Crypto)" value={rrConfig.cryptoMaxSL||3}
+                      onChange={v=>update('cryptoMaxSL',parseInt(v)||3)} type="number" />
+                  </div>
+                </div>
+              ))}
+
+              <button onClick={save} style={{ width:'100%',padding:'11px',borderRadius:9,border:'none',
+                background:'#8B5CF6',color:'#fff',fontWeight:700,fontSize:14,cursor:'pointer' }}>
+                <CheckCircle size={14} style={{marginRight:6}}/> Save Crypto R&R Config
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
+
 
 // ── Morning Check View ───────────────────────────────────
 function MorningCheckView({ authStatus, selectedSymbols, ticks, orbLevels, riskStatus, rrConfig, masterOn, socketConnected, savedApis }) {

@@ -520,6 +520,27 @@ app.get('/api/delta/status', (req, res) => {
   res.json({ success: true, apis: deltaAuth.getStatus() });
 });
 
+// Place Delta Exchange order
+app.post('/api/delta/order', async (req, res) => {
+  const { apiId, symbol, side, size, orderType, limitPrice } = req.body;
+  if (!apiId || !symbol || !side || !size) {
+    return res.status(400).json({ success: false, error: 'apiId, symbol, side, size required' });
+  }
+  try {
+    // Get product ID for symbol
+    const result = await deltaAuth.placeOrder(apiId, {
+      productId: symbol, side, size: parseInt(size),
+      orderType: orderType || 'market_order',
+      limitPrice
+    });
+    logger.info(`[DELTA] Order placed: ${JSON.stringify(result)}`);
+    res.json(result);
+  } catch (err) {
+    logger.error('[DELTA] Order error:', err.message);
+    res.json({ success: false, error: err.message });
+  }
+});
+
 // ── Force reconnect feed ─────────────────────────────────
 app.get('/api/feed/reconnect', (req, res) => {
   try {
