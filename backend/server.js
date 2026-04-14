@@ -129,11 +129,15 @@ app.get('/api/auth/callback', async (req, res) => {
     }, 3000);
 
     emit('authSuccess', { profile: fyersAuth.profile });
-    // Redirect to frontend
-    res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}?auth=success`);
+    // Redirect to frontend — auto-detect port
+    const port = process.env.PORT || 5000;
+    const frontendUrl = process.env.FRONTEND_URL || `http://localhost:${port}`;
+    res.redirect(`${frontendUrl}/?auth=success`);
   } catch (err) {
     logger.error('[SERVER] Auth callback error:', err.message);
-    res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}?auth=failed&reason=${encodeURIComponent(err.message)}`);
+    const port = process.env.PORT || 5000;
+    const frontendUrl = process.env.FRONTEND_URL || `http://localhost:${port}`;
+    res.redirect(`${frontendUrl}/?auth=failed&reason=${encodeURIComponent(err.message)}`);
   }
 });
 
@@ -142,7 +146,6 @@ app.get('/api/auth/status', (req, res) => {
 });
 
 app.post('/api/auth/token', (req, res) => {
-  // Manual token entry from frontend
   const { token } = req.body;
   if (!token) return res.status(400).json({ error: 'token required' });
   fyersAuth.setToken(token);
@@ -152,61 +155,20 @@ app.post('/api/auth/token', (req, res) => {
   res.json({ success: true, message: 'Token set. Feed connecting...' });
 });
 
-// ── /set-token — Receives token pushed from ALGO_VISH Token Manager ──────────
-// Called automatically by the local token manager after Fyers OAuth login.
-// Requires PUSH_SECRET env var to match (set same value in both apps).
-app.post('/set-token', (req, res) => {
-  const { broker, access_token, app_id, secret } = req.body;
-
-  // Security check
-  const expectedSecret = process.env.PUSH_SECRET || 'algo_vish_secret';
-  if (secret !== expectedSecret) {
-    logger.warn('[SET-TOKEN] Unauthorized push attempt');
-    return res.status(401).json({ success: false, error: 'Unauthorized' });
-  }
-
-  if (!access_token) {
-    return res.status(400).json({ success: false, error: 'access_token required' });
-  }
-
-  const brokerName = (broker || 'fyers').toLowerCase();
-
-  if (brokerName === 'fyers') {
-    // Inject token into fyersAuth module
-    fyersAuth.setToken(access_token);
-
-    // Override appId if provided
-    if (app_id) {
-      process.env.FYERS_APP_ID = app_id;
-    }
-
-    // Init and connect data feed
-    fyersData.init(process.env.FYERS_APP_ID, access_token);
-    fyersData.connect();
-
-    // Auto-subscribe saved stocks after 3s
-    setTimeout(() => {
-      if (selectedSymbols.length > 0) {
-        fyersData.subscribe(selectedSymbols);
-        logger.info(`[SET-TOKEN] Auto-subscribed ${selectedSymbols.length} saved stocks after token push`);
-      }
-    }, 3000);
-
-    logger.info(`[SET-TOKEN] ✅ Fyers token injected from Token Manager — Feed starting`);
-    emit('authSuccess', { source: 'token_manager', broker: brokerName });
-
-    return res.json({
-      success:     true,
-      broker:      brokerName,
-      message:     'Token set. Feed connecting...',
-      received_at: new Date().toISOString(),
-      stocks:      selectedSymbols.length
-    });
-  }
-
-  // Other brokers — store for future use
-  logger.info(`[SET-TOKEN] Token received for ${brokerName} (not yet implemented)`);
-  res.json({ success: true, broker: brokerName, message: 'Token stored' });
+// ── Update Fyers credentials from frontend ─────────────────
+app.post('/api/auth/credentials', (req, res) => {
+  const { appId, secretKey, redirectUri } = req.body;
+  if (!appId || !secretKey) return res.status(400).json({ error: 'appId and secretKey required' });
+  // Update fyersAuth credentials
+  fyersAuth.appId      = appId;
+  fyersAuth.secretKey  = secretKey;
+  fyersAuth.redirectUri = redirectUri || fyersAuth.redirectUri;
+  // Also update env so getAuthUrl uses new creds
+  process.env.FYERS_APP_ID       = appId;
+  process.env.FYERS_SECRET_KEY   = secretKey;
+  if (redirectUri) process.env.FYERS_REDIRECT_URI = redirectUri;
+  logger.info('[AUTH] Credentials updated: ' + appId);
+  res.json({ success: true, message: 'Credentials updated. Now click Login to Fyers.' });
 });
 
 // ── Stocks ────────────────────────────────────────────────
@@ -513,15 +475,14 @@ app.get('/api/feed/reconnect', (req, res) => {
 // ── Health ────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
   res.json({
-    status:              'ok',
-    uptime:              process.uptime(),
-    dataFeed:            fyersData.isConnected,
-    auth:                fyersAuth.isAuthenticated,
-    token_manager_ready: fyersAuth.isAuthenticated,
+    status:          'ok',
+    uptime:          process.uptime(),
+    dataFeed:        fyersData.isConnected,
+    auth:            fyersAuth.isAuthenticated,
     masterEnabled,
-    subscribedStocks:    selectedSymbols.length,
-    activeSignals:       Object.keys(orbEngine.getActiveSignals()).length,
-    time:                new Date().toISOString()
+    subscribedStocks: selectedSymbols.length,
+    activeSignals:   Object.keys(orbEngine.getActiveSignals()).length,
+    time:            new Date().toISOString()
   });
 });
 

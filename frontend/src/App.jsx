@@ -856,22 +856,23 @@ function DashboardView({ masterOn, setMasterOn, selectedSymbols, ticks, orbLevel
 // ─────────────────────────────────────────────────────────
 const BROKERS = {
   indian: [
-    { id:'fyers',    name:'Fyers',          color:'#6366F1',
+    { id:'fyers',    name:'Fyers',     color:'#6366F1',
       fields:['App ID','Secret Key','Client ID','Redirect URL'],
-      autoToken:true,   // supports OAuth auto-token
-      tokenField:'Access Token' },
-    { id:'dhan',     name:'Dhan',           color:'#0EA5E9',
+      autoToken:true, tokenField:'Access Token',
+      note:'After saving App ID & Secret Key → click Connect → Fyers login opens → token saves automatically' },
+    { id:'dhan',     name:'Dhan',      color:'#0EA5E9',
       fields:['Client ID','Access Token','Partner ID','Partner Name','API Key'] },
-    { id:'angelone', name:'AngelOne',       color:'#F59E0B',
+    { id:'angelone', name:'AngelOne',  color:'#F59E0B',
       fields:['API Key','Secret Key','Client Code','PIN','TOTP Key'] },
-    { id:'upstox',   name:'Upstox',         color:'#10B981',
+    { id:'upstox',   name:'Upstox',    color:'#10B981',
       fields:['API Key','Secret Key','Redirect URI','User ID'],
       autoToken:true, tokenField:'Access Token' },
   ],
   crypto: [
     { id:'delta', name:'Delta Exchange', color:'#8B5CF6',
-      fields:['API Key','API Secret','Client ID','Testnet Key','Testnet Secret'],
-      alwaysOn:true },
+      fields:['App Name','API Key','API Secret'],
+      alwaysOn:true,
+      note:'Delta Exchange runs 24/7. API Key and Secret from delta.exchange → API Keys section' },
   ]
 };
 
@@ -955,22 +956,61 @@ function ApiCredView({ authStatus }) {
       saveApis(apis.filter(a => a.id!==id));
   };
 
-  // ── Connect — auto-fetch token via OAuth ─────────────────
+  // ── Connect — push credentials to backend then open OAuth ──
   const connectApi = async (a) => {
     setConnStatus(p => ({...p, [a.id]: 'connecting'}));
     try {
       if (a.brokerId === 'fyers') {
-        // For Fyers — use the existing OAuth flow
+        // Step 1: Push App ID + Secret to backend first
+        const appId    = a.fields['App ID'];
+        const secretKey = a.fields['Secret Key'];
+        const clientId  = a.fields['Client ID'];
+        const redirectUrl = a.fields['Redirect URL'] ||
+          `${window.location.protocol}//${window.location.host}/api/auth/callback`;
+
+        if (!appId || !secretKey) {
+          setMsg({ type:'error', text: 'Please edit this API and fill in App ID and Secret Key first.' });
+          setConnStatus(p => ({...p, [a.id]: 'idle'}));
+          return;
+        }
+
+        // Push credentials to backend
+        await api.post('/api/auth/credentials', {
+          appId, secretKey, redirectUri: redirectUrl
+        });
+
+        // Step 2: Open Fyers OAuth
         const r = await api.get('/api/auth/url');
         window.open(r.url, '_blank');
-        setMsg({ type:'info', text: 'Fyers login opened. After login, token auto-saves.' });
-        // Mark as connected after short delay (token saves via callback)
-        setTimeout(() => {
-          setConnStatus(p => ({...p, [a.id]: 'connected'}));
-          saveApis(apis.map(x => x.id===a.id ? {...x, connected:true} : x));
-        }, 5000);
+        setMsg({ type:'success', text: '✅ Credentials saved! Fyers login opened in new tab. After login, token saves automatically.' });
+
+        // Check auth status after 10 seconds
+        setTimeout(async () => {
+          try {
+            const status = await api.get('/api/auth/status');
+            if (status.isAuthenticated) {
+              setConnStatus(p => ({...p, [a.id]: 'connected'}));
+              saveApis(apis.map(x => x.id===a.id ? {...x, connected:true} : x));
+              setMsg({ type:'success', text: '✅ Fyers connected successfully!' });
+            }
+          } catch(_) {}
+        }, 10000);
+
+      } else if (a.brokerId === 'delta') {
+        // Delta Exchange — validate API key
+        const apiKey    = a.fields['API Key'];
+        const apiSecret = a.fields['API Secret'];
+        if (!apiKey || !apiSecret) {
+          setMsg({ type:'error', text: 'Please edit this API and fill in API Key and API Secret first.' });
+          setConnStatus(p => ({...p, [a.id]: 'idle'}));
+          return;
+        }
+        // Mark as connected (Delta doesn't need OAuth)
+        saveApis(apis.map(x => x.id===a.id ? {...x, connected:true} : x));
+        setConnStatus(p => ({...p, [a.id]: 'connected'}));
+        setMsg({ type:'success', text: '✅ Delta Exchange API saved! Active 24/7.' });
       } else {
-        setMsg({ type:'info', text: a.name + ' — paste access token in the edit form manually.' });
+        setMsg({ type:'info', text: a.name + ' — paste access token in the edit form.' });
         setConnStatus(p => ({...p, [a.id]: 'idle'}));
       }
     } catch(e) {
@@ -2113,11 +2153,31 @@ function RiskRewardView({ rrConfig, setRrConfig, selectedSymbols, ticks, authSta
 }
 
 // ── Morning Check View ───────────────────────────────────
-function MorningCheckView({ authStatus, selectedSymbols, ticks, orbLevels, riskStatus, rrConfig, masterOn, socketConnected }) {
-  const [checks, setChecks] = useState([]);
+function MorningCheckView({ authStatus, selectedSymbols, ticks, orbLevels, riskStatus, rrConfig, masterOn, socketConnected, savedApis }) {
+  const [checks,  setChecks]  = useState([]);
   const [running, setRunning] = useState(false);
   const [orbData, setOrbData] = useState(null);
-  const [health, setHealth] = useState(null);
+  const [loginLoading, setLoginLoading] = useState({});
+
+  // Quick login handler — pushes credentials then opens OAuth
+  const handleFyersLogin = async (apiEntry) => {
+    setLoginLoading(p=>({...p, [apiEntry?.id||'main']: true}));
+    try {
+      if (apiEntry) {
+        // Push saved credentials first
+        const appId     = apiEntry.fields['App ID'];
+        const secretKey = apiEntry.fields['Secret Key'];
+        const redirect  = apiEntry.fields['Redirect URL'] ||
+          `${window.location.protocol}//${window.location.host}/api/auth/callback`;
+        if (appId && secretKey) {
+          await api.post('/api/auth/credentials', { appId, secretKey, redirectUri: redirect });
+        }
+      }
+      const r = await api.get('/api/auth/url');
+      window.open(r.url, '_blank');
+    } catch(e) { alert('Login error: ' + e.message); }
+    setLoginLoading(p=>({...p, [apiEntry?.id||'main']: false}));
+  };
 
   const runChecks = async () => {
     setRunning(true);
@@ -2126,38 +2186,89 @@ function MorningCheckView({ authStatus, selectedSymbols, ticks, orbLevels, riskS
     // 1. Server connection
     try {
       const h = await api.get('/api/health');
-      setHealth(h);
       results.push({ label:'Server Online', ok: h.status==='ok', val: h.status==='ok'?'✓ Running':'✗ Offline' });
-      results.push({ label:'Fyers Auth', ok: h.auth, val: h.auth?'✓ Token Valid':'✗ Not Logged In', action: !h.auth?'Login to Fyers':null });
-      results.push({ label:'Live Feed', ok: h.dataFeed, val: h.dataFeed?'✓ Connected':'✗ Disconnected', action: !h.dataFeed?'api/feed/reconnect':null });
-      results.push({ label:'Stocks Subscribed', ok: h.subscribedStocks>0, val: `${h.subscribedStocks} stocks`, action: h.subscribedStocks===0?'Go to Stock Selection':null });
+      results.push({ label:'Live Feed', ok: h.dataFeed, val: h.dataFeed?'✓ Connected':'✗ Disconnected',
+        action: !h.dataFeed?'api/feed/reconnect':null });
+      results.push({ label:'Stocks Subscribed', ok: h.subscribedStocks>0,
+        val: `${h.subscribedStocks} stocks`,
+        action: h.subscribedStocks===0?'Go to Stock Selection':null });
     } catch(e) {
       results.push({ label:'Server Online', ok:false, val:'✗ Cannot reach server' });
     }
 
-    // 2. ORB levels
+    // 2. Check each saved API broker
+    const fyersApis = (savedApis||[]).filter(a=>a.brokerId==='fyers');
+    const deltaApis = (savedApis||[]).filter(a=>a.brokerId==='delta');
+
+    if (fyersApis.length > 0) {
+      const authOk = authStatus?.isAuthenticated;
+      fyersApis.forEach(a => {
+        results.push({
+          label: `Fyers: ${a.name}`,
+          ok: authOk,
+          val: authOk?`✓ Connected · ${authStatus?.profile?.name||''}`:
+               '✗ Not logged in',
+          action: !authOk?'Login below':null,
+          loginBtn: !authOk ? a : null
+        });
+      });
+    } else {
+      // No Fyers API added — check default auth
+      const authOk = authStatus?.isAuthenticated;
+      results.push({
+        label: 'Fyers Auth',
+        ok: authOk,
+        val: authOk?`✓ Connected · ${authStatus?.profile?.name||''}`:
+             '✗ Not logged in',
+        action: !authOk?'Add Fyers API first in API Credentials':null,
+        loginBtn: !authOk ? null : null
+      });
+    }
+
+    if (deltaApis.length > 0) {
+      deltaApis.forEach(a => {
+        const hasKeys = a.fields['API Key'] && a.fields['API Secret'];
+        results.push({
+          label: `Delta: ${a.name}`,
+          ok: hasKeys && a.connected,
+          val: hasKeys && a.connected?'✓ Connected 24/7':
+               hasKeys?'Keys saved — click Connect in API section':
+               '✗ API Key/Secret missing',
+          action: !hasKeys?'Edit API in API Credentials':null
+        });
+      });
+    }
+
+    // 3. ORB levels
     try {
       const o = await api.get('/api/stocks/orb');
       setOrbData(o.levels);
       const lockedCount = Object.values(o.levels||{}).filter(v=>v?.locked).length;
       const totalStocks = Object.keys(o.levels||{}).length;
-      results.push({ label:'ORB Levels Locked', ok: lockedCount>0, val: `${lockedCount}/${totalStocks} locked`, action: lockedCount===0?'Save stocks to fetch ORB':null });
+      results.push({ label:'ORB Levels Locked', ok: lockedCount>0,
+        val: `${lockedCount}/${totalStocks} locked`,
+        action: lockedCount===0?'Save stocks to fetch ORB':null });
     } catch(e) {
       results.push({ label:'ORB Levels', ok:false, val:'Could not fetch' });
     }
 
-    // 3. Capital configured
+    // 4. Capital
     const cap = rrConfig?.capital||0;
-    results.push({ label:'Capital Set', ok: cap>1000, val: cap>1000?`₹${cap.toLocaleString('en-IN')} ready`:'Too low — sync balance', action: cap<=1000?'Go to Risk & Reward':null });
+    results.push({ label:'Capital Set', ok: cap>1000,
+      val: cap>1000?`₹${cap.toLocaleString('en-IN')} ready`:'Sync balance in Risk & Reward',
+      action: cap<=1000?'Go to Risk & Reward':null });
 
-    // 4. Master toggle
-    results.push({ label:'Master Toggle', ok: masterOn, val: masterOn?'✓ Bot Active':'✗ Toggle is OFF', action: !masterOn?'Turn ON from Dashboard':null });
+    // 5. Master toggle
+    results.push({ label:'Master Toggle', ok: masterOn,
+      val: masterOn?'✓ Bot Active':'✗ Toggle is OFF',
+      action: !masterOn?'Turn ON from Dashboard':null });
 
-    // 5. Market hours
+    // 6. Market hours
     const now = new Date();
-    const h2 = now.getHours(), m = now.getMinutes();
-    const isMarket = (h2>9||(h2===9&&m>=15)) && (h2<15||(h2===15&&m<=25));
-    results.push({ label:'Market Hours', ok: isMarket, val: isMarket?'✓ Market Open':'Market Closed (9:15-15:25)' });
+    const hh = now.getHours(), mm = now.getMinutes();
+    const isMarket = (hh>9||(hh===9&&mm>=15)) && (hh<15||(hh===15&&mm<=25));
+    results.push({ label:'Market Hours', ok: isMarket,
+      val: isMarket?'✓ Market Open':'Market Closed (9:15-15:25)' });
 
     setChecks(results);
     setRunning(false);
@@ -2206,17 +2317,26 @@ function MorningCheckView({ authStatus, selectedSymbols, ticks, orbLevels, riskS
         {checks.map((check,i) => (
           <div key={i} style={{ background:'#fff',border:`1.5px solid ${check.ok?G+'50':R+'50'}`,
             borderRadius:10,padding:'12px 16px',
-            display:'flex',alignItems:'center',justifyContent:'space-between' }}>
-            <div>
+            display:'flex',alignItems:'center',justifyContent:'space-between',gap:10 }}>
+            <div style={{ flex:1 }}>
               <div style={{ display:'flex',alignItems:'center',gap:7,marginBottom:3 }}>
                 <div style={{ width:8,height:8,borderRadius:'50%',background:check.ok?G:R,flexShrink:0 }}/>
                 <span style={{ fontWeight:700,fontSize:13,color:T1 }}>{check.label}</span>
               </div>
               <div style={{ fontSize:12,color:check.ok?G:R,marginLeft:15 }}>{check.val}</div>
               {check.action && (
-                <div style={{ fontSize:11,color:W,marginLeft:15,marginTop:3 }}>
-                  → {check.action}
-                </div>
+                <div style={{ fontSize:11,color:W,marginLeft:15,marginTop:3 }}>→ {check.action}</div>
+              )}
+              {check.loginBtn && (
+                <button onClick={()=>handleFyersLogin(check.loginBtn)}
+                  disabled={loginLoading[check.loginBtn.id]}
+                  style={{ marginLeft:15,marginTop:6,padding:'5px 12px',borderRadius:6,
+                    border:'none',background:'#6366F1',color:'#fff',fontWeight:600,
+                    fontSize:11,cursor:'pointer',display:'flex',alignItems:'center',gap:5 }}>
+                  {loginLoading[check.loginBtn.id]
+                    ?<RefreshCw size={10} style={{animation:'spin 1s linear infinite'}}/>:'🔑'}
+                  Login Now
+                </button>
               )}
             </div>
             <div style={{ fontSize:20 }}>{check.ok?'✅':'❌'}</div>
@@ -2254,17 +2374,35 @@ function MorningCheckView({ authStatus, selectedSymbols, ticks, orbLevels, riskS
       <div style={{ marginTop:8 }}>
         <div style={{ fontWeight:700,fontSize:13,color:T1,marginBottom:10 }}>Quick Actions</div>
         <div style={{ display:'flex',gap:9,flexWrap:'wrap' }}>
-          {[
-            { label:'🔑 Login Fyers', action: ()=>api.get('/api/auth/url').then(r=>window.open(r.url,'_blank')) },
-            { label:'📡 Reconnect Feed', action: ()=>api.get('/api/feed/reconnect').then(()=>alert('Feed reconnecting...')) },
-            { label:'🔄 Run Checks Again', action: runChecks },
-          ].map((btn,i)=>(
-            <button key={i} onClick={btn.action} style={{
-              padding:'9px 16px',borderRadius:8,border:`1.5px solid ${SB}`,
-              background:'#EEF2FF',color:SB,fontWeight:600,fontSize:13,cursor:'pointer' }}>
-              {btn.label}
+          {/* Login buttons for each Fyers API */}
+          {(savedApis||[]).filter(a=>a.brokerId==='fyers').map(a=>(
+            <button key={a.id} onClick={()=>handleFyersLogin(a)}
+              disabled={loginLoading[a.id]}
+              style={{ padding:'9px 16px',borderRadius:8,border:`1.5px solid #6366F1`,
+                background:'#EEF2FF',color:'#6366F1',fontWeight:600,fontSize:13,cursor:'pointer',
+                display:'flex',alignItems:'center',gap:6 }}>
+              {loginLoading[a.id]?<RefreshCw size={12} style={{animation:'spin 1s linear infinite'}}/>:'🔑'}
+              Login {a.name}
             </button>
           ))}
+          {/* If no Fyers API added */}
+          {(savedApis||[]).filter(a=>a.brokerId==='fyers').length===0 && (
+            <button onClick={()=>handleFyersLogin(null)} style={{
+              padding:'9px 16px',borderRadius:8,border:`1.5px solid #6366F1`,
+              background:'#EEF2FF',color:'#6366F1',fontWeight:600,fontSize:13,cursor:'pointer' }}>
+              🔑 Login Fyers
+            </button>
+          )}
+          <button onClick={()=>api.get('/api/feed/reconnect').then(()=>alert('Feed reconnecting...'))} style={{
+            padding:'9px 16px',borderRadius:8,border:`1.5px solid ${SB}`,
+            background:'#EEF2FF',color:SB,fontWeight:600,fontSize:13,cursor:'pointer' }}>
+            📡 Reconnect Feed
+          </button>
+          <button onClick={runChecks} style={{
+            padding:'9px 16px',borderRadius:8,border:`1.5px solid ${G}`,
+            background:'#F0FDF4',color:G,fontWeight:600,fontSize:13,cursor:'pointer' }}>
+            🔄 Run Checks Again
+          </button>
         </div>
       </div>
 
@@ -2605,13 +2743,28 @@ export default function App() {
   const [alerts,         setAlerts]         = useState([]);
   const [riskStatus,     setRiskStatus]     = useState({});
   const [rrConfig, setRrConfig] = useState(() => {
-    // Load from localStorage on startup
     try {
       const saved = localStorage.getItem('orb_rr_config');
       if (saved) return JSON.parse(saved);
     } catch(_) {}
     return { capital:50000, leverage:5, riskPct:2, rrRatio:2, maxSLPerDay:3 };
   });
+
+  // Saved APIs from localStorage (read-only in main App — ApiCredView manages writes)
+  const [savedApis, setSavedApis] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('orb_apis') || '[]'); } catch(_) { return []; }
+  });
+
+  // Keep savedApis in sync when localStorage changes (e.g. from ApiCredView)
+  useEffect(() => {
+    const sync = () => {
+      try { setSavedApis(JSON.parse(localStorage.getItem('orb_apis') || '[]')); } catch(_) {}
+    };
+    window.addEventListener('storage', sync);
+    // Also poll every 3s for same-tab changes
+    const t = setInterval(sync, 3000);
+    return () => { window.removeEventListener('storage', sync); clearInterval(t); };
+  }, []);
 
   // Auto-save rrConfig to localStorage whenever it changes
   useEffect(() => {
