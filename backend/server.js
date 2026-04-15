@@ -401,6 +401,16 @@ app.get('/api/risk/status', (req, res) => {
   res.json({ success: true, ...riskManager.getStatus() });
 });
 
+// GET RR config — used by chart for SL/TGT calculation
+app.get('/api/risk/config', (req, res) => {
+  const cfg = riskManager.getConfig ? riskManager.getConfig() : null;
+  const fallback = {
+    capital:50000,leverage:5,riskPct:2,rrRatio:2,maxSLPerDay:3,
+    cryptoLeverage:10,cryptoRiskPct:2,cryptoRRRatio:2,cryptoMaxSL:3
+  };
+  res.json({ success:true, config: cfg || fallback });
+});
+
 app.post('/api/risk/config', (req, res) => {
   const cfg = req.body;
   rrConfig = { ...rrConfig, ...cfg };
@@ -729,6 +739,73 @@ app.post('/api/alerts/webhook', async (req, res) => {
 app.get('/api/alerts/history', (req, res) => {
   const chartAlerts = alertLog.filter(a => a.source === 'chart' || a.msg?.includes('[CHART]'));
   res.json({ success:true, alerts: chartAlerts.slice(-100) });
+});
+
+// ─────────────────────────────────────────────────────────
+// CHART DATA PROXY — serves Indian stock candles to chart.html
+// Runs server-side so no CORS issues with Yahoo Finance
+// ─────────────────────────────────────────────────────────
+app.get('/api/chart/history', async (req, res) => {
+  // Allow chart.html from any origin
+  res.header('Access-Control-Allow-Origin', '*');
+
+  const { symbol, tf } = req.query;
+  if (!symbol) return res.status(400).json({ error: 'symbol required' });
+
+  const isIndian = symbol.endsWith('.NS') || symbol.endsWith('.BSE') || symbol.includes(':');
+  
+  if (!isIndian) return res.json({ error: 'use Binance for crypto' });
+
+  // Map timeframe to Yahoo interval and range
+  const IV_MAP = { '1m':'1m','3m':'2m','5m':'5m','10m':'5m','15m':'15m','30m':'30m','1h':'60m','4h':'60m','1d':'1d' };
+  const RG_MAP = { '1m':'1d','3m':'2d','5m':'5d','10m':'5d','15m':'5d','30m':'30d','1h':'60d','4h':'60d','1d':'1y' };
+  const interval = IV_MAP[tf] || '5m';
+  const range    = RG_MAP[tf] || '5d';
+
+  try {
+    const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${interval}&range=${range}&includePrePost=false`;
+    
+    const https = require('https');
+    const data = await new Promise((resolve, reject) => {
+      const options = {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122',
+          'Accept': 'application/json, */*',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Origin': 'https://finance.yahoo.com',
+          'Referer': 'https://finance.yahoo.com/',
+        }
+      };
+      https.get(yahooUrl, options, (r) => {
+        let body = '';
+        r.on('data', chunk => body += chunk);
+        r.on('end', () => resolve(body));
+      }).on('error', reject);
+    });
+
+    const parsed = JSON.parse(data);
+    const result = parsed.chart?.result?.[0];
+    if (!result) return res.json({ success: false, candles: [], error: 'No data' });
+
+    const ts = result.timestamps || result.timestamp || [];
+    const q  = result.indicators?.quote?.[0] || {};
+
+    const candles = ts.map((t, i) => ({
+      time:   t,
+      open:   q.open?.[i],
+      high:   q.high?.[i],
+      low:    q.low?.[i],
+      close:  q.close?.[i],
+      volume: q.volume?.[i] || 0
+    })).filter(c => c.open && c.close && !isNaN(c.close));
+
+    logger.info(`[CHART] ${symbol} ${tf} — ${candles.length} candles`);
+    res.json({ success: true, symbol, tf, candles });
+
+  } catch (err) {
+    logger.error('[CHART] History error:', err.message);
+    res.json({ success: false, candles: [], error: err.message });
+  }
 });
 
 // ── Force reconnect feed ─────────────────────────────────
