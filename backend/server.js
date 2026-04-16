@@ -86,8 +86,10 @@ const savedState    = loadState();
 let selectedSymbols = savedState.selectedSymbols || [];
 let masterEnabled   = savedState.masterEnabled   || false;
 let stockToggles    = savedState.stockToggles    || {};
-let rrConfig        = savedState.rrConfig        || {
-  capital: 50000, leverage: 5, riskPct: 2, rrRatio: 2, maxSLPerDay: 3
+let rrConfig = {
+  capital: 50000, leverage: 5, riskPct: 2, rrRatio: 2, maxSLPerDay: 3,
+  cryptoLeverage: 10, cryptoRiskPct: 2, cryptoRRRatio: 2, cryptoMaxSL: 3,
+  ...(savedState.rrConfig || {})  // overlay saved values on top of defaults
 };
 let alertLog        = [];
 
@@ -409,11 +411,13 @@ app.get('/api/risk/config', (req, res) => {
 
 app.post('/api/risk/config', (req, res) => {
   const cfg = req.body;
-  rrConfig = { ...rrConfig, ...cfg };
+  // Merge ALL fields including crypto
+  rrConfig = Object.assign({}, rrConfig, cfg);
   riskManager.updateConfig(rrConfig);
   orbEngine.updateConfig(rrConfig);
-  emit('configUpdated', rrConfig);
   saveState();
+  emit('configUpdated', rrConfig);
+  logger.info('[RR] Config saved: '+JSON.stringify(rrConfig));
   res.json({ success: true, config: rrConfig });
 });
 
