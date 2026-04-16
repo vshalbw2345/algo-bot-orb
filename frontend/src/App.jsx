@@ -609,10 +609,10 @@ const NAV = [
   { id:'morning',   label:'Morning Check',     icon:CheckCircle, badge:'GO' },
   { id:'dashboard', label:'Dashboard',          icon:LayoutDashboard },
   { id:'api',       label:'API Credentials',    icon:Key },
-  { id:'chart',     label:'Live Chart',          icon:Monitor },
+  // Live Chart removed — use http://34.47.182.99:3000
   { id:'stocks',    label:'Stock Selection',     icon:List },
   { id:'test',      label:'Test Signal',         icon:Zap },
-  { id:'simulator', label:'ORB Simulator',       icon:Activity, badge:'SIM' },
+  // ORB Simulator removed
   { id:'rr',        label:'Risk & Reward',       icon:Calculator },
   { id:'syntax',    label:'Syntax Generator',    icon:Code2 },
 ];
@@ -714,8 +714,73 @@ function DashboardView({ masterOn, setMasterOn, selectedSymbols, ticks, orbLevel
   const slHits = Object.values(riskStatus?.daily?.stockSLHits||{}).reduce((a,b)=>a+b,0);
   const dayPnl = riskStatus?.daily?.totalPnl||0;
 
+  // Fetch active trades from server
+  const [activeTrades, setActiveTrades] = React.useState([]);
+  React.useEffect(()=>{
+    const fetchTrades = ()=>{
+      api.get('/api/trades/active').then(d=>{ if(d.success) setActiveTrades(d.trades||[]); }).catch(()=>{});
+    };
+    fetchTrades();
+    const t=setInterval(fetchTrades,2000); // refresh every 2s for live PnL
+    return ()=>clearInterval(t);
+  },[]);
+
   return (
     <div style={{ padding:'18px 22px',height:'100%',overflowY:'auto' }}>
+
+      {/* ── ACTIVE TRADES ──────────────────────────────────── */}
+      {activeTrades.length>0 && (
+        <div style={{ background:'#fff',border:'1.5px solid #e0e7ef',borderRadius:12,padding:'14px 16px',marginBottom:16 }}>
+          <div style={{ fontWeight:800,fontSize:14,color:'#1e293b',marginBottom:10 }}>
+            🔴 Active Trades ({activeTrades.length})
+          </div>
+          {activeTrades.map((t,i)=>{
+            const sym = t.symbol;
+            const ltp = ticks[sym.replace('NSE:','').replace('-EQ','.NS')]?.ltp || t.entry;
+            const pnl = t.side==='BUY' ? (ltp-t.entry)*t.qty : (t.entry-ltp)*t.qty;
+            const pnlPct = ((pnl / (t.entry * t.qty)) * 100).toFixed(2);
+            return (
+              <div key={i} style={{ padding:'8px 10px',borderRadius:8,background:pnl>=0?'#f0fdf4':'#fff1f2',
+                border:`1px solid ${pnl>=0?'#86efac':'#fca5a5'}`,marginBottom:6 }}>
+                <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center' }}>
+                  <div>
+                    <span style={{ fontWeight:800,fontSize:13 }}>{sym}</span>
+                    <span style={{ marginLeft:8,fontSize:11,padding:'2px 6px',borderRadius:4,
+                      background:t.side==='BUY'?'#dcfce7':'#fee2e2',
+                      color:t.side==='BUY'?'#15803d':'#dc2626',fontWeight:700 }}>{t.side}</span>
+                    <span style={{ marginLeft:8,fontSize:10,color:'#64748b' }}>×{t.qty} @ {t.entry}</span>
+                  </div>
+                  <div style={{ textAlign:'right' }}>
+                    <div style={{ fontWeight:800,fontSize:14,color:pnl>=0?'#15803d':'#dc2626' }}>
+                      {pnl>=0?'+':''}₹{pnl.toFixed(2)} ({pnlPct}%)
+                    </div>
+                    <div style={{ fontSize:10,color:'#64748b' }}>LTP: {ltp.toFixed(2)}</div>
+                  </div>
+                </div>
+                <div style={{ display:'flex',gap:12,marginTop:5,fontSize:10,color:'#64748b' }}>
+                  <span>🔴 SL: <b>{t.sl||'—'}</b></span>
+                  <span>🟢 TGT: <b>{t.tgt||'—'}</b></span>
+                  <span>📅 {t.time?new Date(t.time).toLocaleTimeString('en-IN'):''}</span>
+                  <span>🏦 {(t.broker||'').toUpperCase()}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── RR SUMMARY ─────────────────────────────────────── */}
+      <div style={{ background:'#f0f4ff',border:'1.5px solid #c7d7f5',borderRadius:12,padding:'12px 16px',marginBottom:16 }}>
+        <div style={{ fontWeight:800,fontSize:13,color:'#1e293b',marginBottom:8 }}>⚡ R&R Config (Active)</div>
+        <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,fontSize:11 }}>
+          <div>Capital: <b>₹{(rrConfig?.capital||50000).toLocaleString()}</b></div>
+          <div>Leverage: <b>{rrConfig?.leverage||5}×</b></div>
+          <div>Risk: <b>{rrConfig?.riskPct||2}%</b></div>
+          <div>R:R Ratio: <b>1:{rrConfig?.rrRatio||2}</b></div>
+          <div>Max SL/Day: <b>{rrConfig?.maxSLPerDay||3}</b></div>
+          <div>Crypto Risk: <b>{rrConfig?.cryptoRiskPct||0.5}%</b></div>
+        </div>
+      </div>
 
       {/* ── MASTER TOGGLE ──────────────────────────────────── */}
       <div style={{ background:masterOn?'#EEF2FF':'#F8FAFC',border:`2px solid ${masterOn?SB:BD}`,
@@ -3188,7 +3253,8 @@ export default function App() {
       const saved = localStorage.getItem('orb_rr_config');
       if (saved) return JSON.parse(saved);
     } catch(_) {}
-    return { capital:50000, leverage:5, riskPct:2, rrRatio:2, maxSLPerDay:3 };
+    return { capital:50000, leverage:5, riskPct:2, rrRatio:2, maxSLPerDay:3,
+             cryptoLeverage:10, cryptoRiskPct:2, cryptoRRRatio:2, cryptoMaxSL:3 };
   });
 
   // Saved APIs from localStorage (read-only in main App — ApiCredView manages writes)
@@ -3211,6 +3277,15 @@ export default function App() {
   useEffect(() => {
     try { localStorage.setItem('orb_rr_config', JSON.stringify(rrConfig)); } catch(_) {}
   }, [JSON.stringify(rrConfig)]);
+
+  // Load RR from server on boot — server is source of truth
+  useEffect(() => {
+    api.get('/api/risk/config').then(d => {
+      if (d.success && d.config) {
+        setRrConfig(prev => ({ ...prev, ...d.config }));
+      }
+    }).catch(() => {});
+  }, []);
   const [sysAlerts,      setSysAlerts]      = useState([]);
   const [funds,          setFunds]          = useState([]);   // global broker balance
 
@@ -3486,7 +3561,7 @@ export default function App() {
               rrConfig={rrConfig} authStatus={authStatus} savedApis={savedApis} />
           )}
           {activeView==='api' && <ApiCredView authStatus={authStatus} onApisChange={setSavedApis} />}
-          {activeView==='chart' && (
+          {false && (
             <LiveChartView selectedSymbols={selectedSymbols} ticks={ticks}
               orbLevels={orbLevels} activeSignals={activeSignals} authStatus={authStatus} />
           )}
@@ -3505,7 +3580,7 @@ export default function App() {
               ticks={ticks} orbLevels={orbLevels} riskStatus={riskStatus}
               rrConfig={rrConfig} masterOn={masterOn} socketConnected={socketConnected} />
           )}
-          {activeView==='simulator' && (
+          {false && (
             <ORBSimulatorView rrConfig={rrConfig} alerts={alerts} setAlerts={setAlerts} />
           )}
           {activeView==='syntax' && <SyntaxGenView selectedSymbols={selectedSymbols} />}
