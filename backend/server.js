@@ -403,12 +403,8 @@ app.get('/api/risk/status', (req, res) => {
 
 // GET RR config — used by chart for SL/TGT calculation
 app.get('/api/risk/config', (req, res) => {
-  const cfg = riskManager.getConfig ? riskManager.getConfig() : null;
-  const fallback = {
-    capital:50000,leverage:5,riskPct:2,rrRatio:2,maxSLPerDay:3,
-    cryptoLeverage:10,cryptoRiskPct:2,cryptoRRRatio:2,cryptoMaxSL:3
-  };
-  res.json({ success:true, config: cfg || fallback });
+  // Return actual saved rrConfig from state
+  res.json({ success:true, config: rrConfig });
 });
 
 app.post('/api/risk/config', (req, res) => {
