@@ -3,7 +3,7 @@
 // Connects live to backend via Socket.io
 // npm install socket.io-client axios
 // ─────────────────────────────────────────────────────────
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { io } from "socket.io-client";
 import axios from "axios";
 import {
@@ -715,13 +715,13 @@ function DashboardView({ masterOn, setMasterOn, selectedSymbols, ticks, orbLevel
   const dayPnl = riskStatus?.daily?.totalPnl||0;
 
   // Fetch active trades from server
-  const [activeTrades, setActiveTrades] = React.useState([]);
-  React.useEffect(()=>{
+  const [activeTrades, setActiveTrades] = useState([]);
+  useEffect(()=>{
     const fetchTrades = ()=>{
       api.get('/api/trades/active').then(d=>{ if(d.success) setActiveTrades(d.trades||[]); }).catch(()=>{});
     };
     fetchTrades();
-    const t=setInterval(fetchTrades,2000); // refresh every 2s for live PnL
+    const t=setInterval(fetchTrades,2000);
     return ()=>clearInterval(t);
   },[]);
 
