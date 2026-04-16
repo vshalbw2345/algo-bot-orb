@@ -606,7 +606,7 @@ app.get('/api/myip', async (req, res) => {
 // Receives alerts from standalone chart → places broker order
 // ─────────────────────────────────────────────────────────
 app.post('/api/alerts/webhook', async (req, res) => {
-  const { symbol, side, price, type, tf, note, qty, broker, source } = req.body;
+  const { symbol, side, price, type, tf, note, qty, broker, source, sl, tgt } = req.body;
 
   if (!symbol || !side) {
     return res.status(400).json({ success:false, error:'symbol and side required' });
@@ -674,6 +674,14 @@ app.post('/api/alerts/webhook', async (req, res) => {
       });
 
       logger.info(`[WEBHOOK] Fyers order: ${JSON.stringify(result)}`);
+      if(result.success){
+        activeTrades = activeTrades.filter(t => t.symbol !== symbol);
+        if(type==='buy'||type==='sell'){
+          activeTrades.push({ symbol, side:orderSide, entry:price, sl:req.body.sl||null, tgt:req.body.tgt||null, qty:parseInt(qty)||1, broker:'fyers', time:new Date().toISOString(), orderId:result.orderId });
+        } else {
+          activeTrades = activeTrades.filter(t => t.symbol !== symbol);
+        }
+      }
       return res.json({ success:true, broker:'fyers', result, alert:alertEntry });
     }
 
@@ -720,6 +728,14 @@ app.post('/api/alerts/webhook', async (req, res) => {
       });
 
       logger.info(`[WEBHOOK] Delta order: ${JSON.stringify(result)}`);
+      if(result.success !== false){
+        activeTrades = activeTrades.filter(t => t.symbol !== symbol);
+        if(type==='buy'||type==='sell'){
+          activeTrades.push({ symbol, side:orderSide, entry:price, sl:req.body.sl||null, tgt:req.body.tgt||null, qty:parseInt(qty)||1, broker:'delta', time:new Date().toISOString() });
+        } else {
+          activeTrades = activeTrades.filter(t => t.symbol !== symbol);
+        }
+      }
       return res.json({ success:true, broker:'delta', result, alert:alertEntry });
     }
 
@@ -739,6 +755,39 @@ app.post('/api/alerts/webhook', async (req, res) => {
 app.get('/api/alerts/history', (req, res) => {
   const chartAlerts = alertLog.filter(a => a.source === 'chart' || a.msg?.includes('[CHART]'));
   res.json({ success:true, alerts: chartAlerts.slice(-100) });
+});
+
+// ─────────────────────────────────────────────────────────
+// WATCHLIST SYNC — chart fetches AlgoBot stock list
+// ─────────────────────────────────────────────────────────
+app.get('/api/stocks/list', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.json({
+    success: true,
+    stocks: selectedSymbols,  // the 10 stocks from AlgoBot
+    count: selectedSymbols.length
+  });
+});
+
+// ─────────────────────────────────────────────────────────
+// ACTIVE TRADES — live positions for dashboard
+// ─────────────────────────────────────────────────────────
+let activeTrades = [];  // {symbol, side, entry, sl, tgt, time, qty, broker}
+
+app.get('/api/trades/active', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.json({ success: true, trades: activeTrades });
+});
+
+app.post('/api/trades/update', (req, res) => {
+  const { symbol, side, entry, sl, tgt, qty, broker, action } = req.body;
+  if (action === 'add') {
+    activeTrades = activeTrades.filter(t => t.symbol !== symbol); // remove old
+    activeTrades.push({ symbol, side, entry, sl, tgt, qty: qty||1, broker: broker||'auto', time: new Date().toISOString() });
+  } else if (action === 'remove') {
+    activeTrades = activeTrades.filter(t => t.symbol !== symbol);
+  }
+  res.json({ success: true, trades: activeTrades });
 });
 
 // ─────────────────────────────────────────────────────────
