@@ -77,7 +77,7 @@ function loadState() {
 function saveState() {
   try {
     fs.writeFileSync(STATE_FILE, JSON.stringify({
-      selectedSymbols, stockToggles, rrConfig, masterEnabled
+      selectedSymbols, stockToggles, rrConfig, masterEnabled, savedApis, savedAlerts
     }, null, 2));
   } catch(e) { logger.warn('[STATE] Could not save state:', e.message); }
 }
@@ -90,8 +90,10 @@ let stockToggles    = savedState.stockToggles    || {};
 let rrConfig = {
   capital: 50000, leverage: 5, riskPct: 2, rrRatio: 2, maxSLPerDay: 3,
   cryptoLeverage: 10, cryptoRiskPct: 2, cryptoRRRatio: 2, cryptoMaxSL: 3,
-  ...(savedState.rrConfig || {})  // overlay saved values on top of defaults
+  ...(savedState.rrConfig || {})
 };
+let savedApis = savedState.savedApis || [];
+let savedAlerts = savedState.savedAlerts || [];
 let alertLog        = [];
 
 logger.info('[STATE] Starting with ' + selectedSymbols.length + ' stocks: ' + selectedSymbols.join(', '));
@@ -805,6 +807,34 @@ app.post('/api/orb/start', (req, res) => {
 app.post('/api/orb/stop', (req, res) => {
   orbScanner.stop();
   res.json({ success: true, message: 'ORB Scanner stopped' });
+});
+
+// ─────────────────────────────────────────────────────────
+// SAVED APIs — server-side storage (visible on all devices)
+// ─────────────────────────────────────────────────────────
+app.get('/api/saved-apis', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.json({ success: true, apis: savedApis });
+});
+
+app.post('/api/saved-apis', (req, res) => {
+  savedApis = req.body.apis || [];
+  saveState();
+  res.json({ success: true, apis: savedApis });
+});
+
+// ─────────────────────────────────────────────────────────
+// SAVED ALERTS — server-side storage
+// ─────────────────────────────────────────────────────────
+app.get('/api/saved-alerts', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.json({ success: true, alerts: savedAlerts });
+});
+
+app.post('/api/saved-alerts', (req, res) => {
+  savedAlerts = req.body.alerts || [];
+  saveState();
+  res.json({ success: true, count: savedAlerts.length });
 });
 
 // ─────────────────────────────────────────────────────────
