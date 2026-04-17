@@ -3235,7 +3235,165 @@ if sell_signal
 // ─────────────────────────────────────────────────────────
 // MAIN APP
 // ─────────────────────────────────────────────────────────
-export default function App() {
+export default // ── ORB Simulator View (visual backtest) ──────────────────
+function ORBSimView({ selectedSymbols, rrConfig }) {
+  const [results, setResults] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [selectedSym, setSelectedSym] = useState('');
+  const [detail, setDetail] = useState(null);
+
+  const runAll = async () => {
+    setLoading(true);
+    try {
+      const d = await api.post('/api/orb/simulate-all', {});
+      if (d.success) setResults(d.results);
+    } catch(e) {}
+    setLoading(false);
+  };
+
+  const runSingle = async (sym) => {
+    setLoading(true);
+    setSelectedSym(sym);
+    try {
+      const d = await api.post('/api/orb/simulate', { symbol: sym, days: 5 });
+      if (d.success) setDetail(d);
+    } catch(e) {}
+    setLoading(false);
+  };
+
+  const TC = { BUY: '#15803d', SELL: '#dc2626' };
+  const EC = { 'SL HIT': '#dc2626', 'TGT HIT': '#15803d', 'OPEN': '#d97706' };
+
+  return (
+    <div style={{ padding:'18px 22px',height:'100%',overflowY:'auto' }}>
+      <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16 }}>
+        <div>
+          <h2 style={{ fontSize:19,fontWeight:800,color:'#1e293b',margin:0 }}>ORB Simulator</h2>
+          <p style={{ fontSize:12,color:'#64748b',margin:0 }}>Replay last 5 days to verify signals</p>
+        </div>
+        <button onClick={runAll} disabled={loading}
+          style={{ background:'#4c8eff',border:'none',color:'#fff',padding:'10px 20px',
+            borderRadius:8,cursor:'pointer',fontSize:13,fontWeight:700,opacity:loading?.5:1 }}>
+          {loading ? '⏳ Running...' : '▶ Simulate All Stocks'}
+        </button>
+      </div>
+
+      {/* Results table */}
+      {results && (
+        <div style={{ background:'#fff',border:'1.5px solid #e0e7ef',borderRadius:12,overflow:'hidden',marginBottom:16 }}>
+          <table style={{ width:'100%',borderCollapse:'collapse',fontSize:13 }}>
+            <thead>
+              <tr style={{ background:'#f8fafc',borderBottom:'1.5px solid #e0e7ef' }}>
+                <th style={{ padding:'10px 14px',textAlign:'left',fontWeight:700 }}>Symbol</th>
+                <th style={{ padding:'10px',textAlign:'center' }}>Days</th>
+                <th style={{ padding:'10px',textAlign:'center',color:'#15803d' }}>BUY Signals</th>
+                <th style={{ padding:'10px',textAlign:'center',color:'#dc2626' }}>SELL Signals</th>
+                <th style={{ padding:'10px',textAlign:'center' }}>Total</th>
+                <th style={{ padding:'10px',textAlign:'center' }}>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {results.map((r, i) => (
+                <tr key={i} style={{ borderBottom:'1px solid #f1f5f9' }}>
+                  <td style={{ padding:'8px 14px',fontWeight:700 }}>{r.symbol?.replace('.NS','')}</td>
+                  <td style={{ padding:'8px',textAlign:'center' }}>{r.days || '—'}</td>
+                  <td style={{ padding:'8px',textAlign:'center',color:'#15803d',fontWeight:700 }}>{r.buys || 0}</td>
+                  <td style={{ padding:'8px',textAlign:'center',color:'#dc2626',fontWeight:700 }}>{r.sells || 0}</td>
+                  <td style={{ padding:'8px',textAlign:'center',fontWeight:700 }}>{r.totalSignals || 0}</td>
+                  <td style={{ padding:'8px',textAlign:'center' }}>
+                    <button onClick={() => runSingle(r.symbol)}
+                      style={{ background:'#4c8eff20',border:'1px solid #4c8eff40',color:'#4c8eff',
+                        padding:'4px 10px',borderRadius:5,cursor:'pointer',fontSize:11,fontWeight:700 }}>
+                      Details
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Detailed trade list for selected stock */}
+      {detail && (
+        <div style={{ background:'#fff',border:'1.5px solid #e0e7ef',borderRadius:12,padding:'16px',marginBottom:16 }}>
+          <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12 }}>
+            <h3 style={{ fontSize:15,fontWeight:800,color:'#1e293b',margin:0 }}>
+              {detail.symbol?.replace('.NS','')} — Trade Details
+            </h3>
+            <div style={{ fontSize:12 }}>
+              <span style={{ color:detail.summary?.totalPnl>=0?'#15803d':'#dc2626',fontWeight:800,fontSize:16 }}>
+                {detail.summary?.totalPnl>=0?'+':''}₹{detail.summary?.totalPnl?.toFixed(2)}
+              </span>
+              <span style={{ color:'#64748b',marginLeft:8 }}>
+                W:{detail.summary?.wins} L:{detail.summary?.losses} WR:{detail.summary?.winRate}
+              </span>
+            </div>
+          </div>
+
+          {/* ORB Levels */}
+          <div style={{ display:'flex',gap:8,flexWrap:'wrap',marginBottom:12 }}>
+            {Object.entries(detail.orbLevels||{}).map(([date, orb]) => (
+              <div key={date} style={{ padding:'6px 10px',borderRadius:6,background:'#f0f4ff',
+                border:'1px solid #c7d7f5',fontSize:11 }}>
+                <div style={{ fontWeight:700,color:'#1e40af' }}>{date.split(' ').slice(0,3).join(' ')}</div>
+                <div><span style={{ color:'#15803d' }}>H: {orb.high}</span> | <span style={{ color:'#dc2626' }}>L: {orb.low}</span></div>
+              </div>
+            ))}
+          </div>
+
+          {/* Trade cards */}
+          {(detail.trades||[]).map((t, i) => (
+            <div key={i} style={{ padding:'10px 12px',borderRadius:8,marginBottom:6,
+              background:t.pnl>0?'#f0fdf4':t.pnl<0?'#fff1f2':'#fffbeb',
+              border:'1px solid '+(t.pnl>0?'#86efac':t.pnl<0?'#fca5a5':'#fde68a') }}>
+              <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center' }}>
+                <div>
+                  <span style={{ fontWeight:800,fontSize:13,color:TC[t.type] }}>{t.type}</span>
+                  <span style={{ marginLeft:8,fontSize:12 }}>@ ₹{t.entry}</span>
+                  <span style={{ marginLeft:8,fontSize:10,color:'#64748b' }}>×{t.qty}</span>
+                  <span style={{ marginLeft:8,fontSize:10,color:'#64748b' }}>{t.entryTime}</span>
+                </div>
+                <div style={{ textAlign:'right' }}>
+                  <div style={{ fontWeight:800,fontSize:14,color:EC[t.exitType] }}>
+                    {t.exitType} {t.exit ? '@ ₹'+t.exit : ''}
+                  </div>
+                  {t.pnl !== 0 && (
+                    <div style={{ fontSize:12,fontWeight:700,color:t.pnl>0?'#15803d':'#dc2626' }}>
+                      {t.pnl>0?'+':''}₹{t.pnl?.toFixed(2)}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div style={{ fontSize:10,color:'#64748b',marginTop:4 }}>
+                {t.date} | ORB H:{t.orbHigh} L:{t.orbLow} | SL:{t.sl} TGT:{t.tgt}
+                {t.exitTime ? ' | Exit: '+t.exitTime : ''}
+              </div>
+            </div>
+          ))}
+
+          {(!detail.trades||!detail.trades.length) && (
+            <div style={{ padding:20,textAlign:'center',color:'#64748b',fontSize:13 }}>
+              No ORB signals in last 5 days for this stock
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* RR Config summary */}
+      <div style={{ background:'#f0f4ff',border:'1px solid #c7d7f5',borderRadius:10,padding:'12px 16px' }}>
+        <div style={{ fontWeight:700,fontSize:12,color:'#1e40af',marginBottom:4 }}>Simulation Config</div>
+        <div style={{ fontSize:11,color:'#64748b' }}>
+          Capital: ₹{rrConfig?.capital||593} | Leverage: {rrConfig?.leverage||4}× |
+          Risk: {rrConfig?.riskPct||1}% | R:R = 1:{rrConfig?.rrRatio||2} |
+          Effective: ₹{((rrConfig?.capital||593)*(rrConfig?.leverage||4)).toLocaleString()}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App() {
   const { socket, connected: socketConnected } = useSocket(SOCKET_URL);
 
   // State from server
@@ -3590,8 +3748,8 @@ export default function App() {
               ticks={ticks} orbLevels={orbLevels} riskStatus={riskStatus}
               rrConfig={rrConfig} masterOn={masterOn} socketConnected={socketConnected} />
           )}
-          {false && (
-            <ORBSimulatorView rrConfig={rrConfig} alerts={alerts} setAlerts={setAlerts} />
+          {activeView==='simulate' && (
+            <ORBSimView selectedSymbols={selectedSymbols} rrConfig={rrConfig} />
           )}
           {activeView==='syntax' && <SyntaxGenView selectedSymbols={selectedSymbols} />}
         </div>
