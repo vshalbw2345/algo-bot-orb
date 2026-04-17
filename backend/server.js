@@ -28,6 +28,7 @@ const orbEngine     = require('./modules/orbEngine');
 const orderExecutor = require('./modules/orderExecutor');
 const riskManager   = require('./modules/riskManager');
 const scheduler     = require('./modules/scheduler');
+const ORBScanner    = require('./orbScanner');
 
 // ── Ensure log dir ────────────────────────────────────────
 if (!fs.existsSync('logs')) fs.mkdirSync('logs');
@@ -94,6 +95,15 @@ let rrConfig = {
 let alertLog        = [];
 
 logger.info('[STATE] Starting with ' + selectedSymbols.length + ' stocks: ' + selectedSymbols.join(', '));
+
+// ── ORB Scanner (runs 24/7 server-side) ───────────────────
+const orbScanner = new ORBScanner({
+  rrConfig,
+  orderExecutor: null, // set after auth
+  fyersAuth: null,
+  logger,
+  emit: (event, data) => io.emit(event, { ...data, ts: new Date().toISOString() })
+});
 
 // ── Helper: broadcast to all Socket.io clients ────────────
 const emit = (event, data) => io.emit(event, { ...data, ts: new Date().toISOString() });
@@ -413,6 +423,7 @@ app.post('/api/risk/config', (req, res) => {
   const cfg = req.body;
   // Merge ALL fields including crypto
   rrConfig = Object.assign({}, rrConfig, cfg);
+  orbScanner.updateConfig(rrConfig);
   riskManager.updateConfig(rrConfig);
   orbEngine.updateConfig(rrConfig);
   saveState();
@@ -431,6 +442,15 @@ app.post('/api/risk/resume', (req, res) => {
 app.post('/api/control/master', (req, res) => {
   const { enabled } = req.body;
   masterEnabled = !!enabled;
+  // ORB Scanner follows master
+  orbScanner.setMaster(masterEnabled);
+  if (masterEnabled && !orbScanner.isRunning) {
+    orbScanner.updateConfig(rrConfig);
+    orbScanner.orderExecutor = orderExecutor;
+    orbScanner.start(selectedSymbols, masterEnabled);
+  } else if (!masterEnabled) {
+    orbScanner.stop();
+  }
   orbEngine.setEnabled(masterEnabled);
   logger.info(`[SERVER] Master trading: ${masterEnabled ? 'ON' : 'OFF'}`);
   emit('masterToggle', { enabled: masterEnabled });
@@ -755,6 +775,36 @@ app.post('/api/alerts/webhook', async (req, res) => {
 app.get('/api/alerts/history', (req, res) => {
   const chartAlerts = alertLog.filter(a => a.source === 'chart' || a.msg?.includes('[CHART]'));
   res.json({ success:true, alerts: chartAlerts.slice(-100) });
+});
+
+// ─────────────────────────────────────────────────────────
+// ORB SCANNER API
+// ─────────────────────────────────────────────────────────
+app.get('/api/orb/status', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.json({ success: true, ...orbScanner.getStatus() });
+});
+
+app.get('/api/orb/levels', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.json({ success: true, levels: orbScanner.getLevels() });
+});
+
+app.get('/api/orb/trades', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.json({ success: true, trades: orbScanner.getActiveTrades(), log: orbScanner.getTradeLog() });
+});
+
+app.post('/api/orb/start', (req, res) => {
+  orbScanner.updateConfig(rrConfig);
+  orbScanner.orderExecutor = orderExecutor;
+  orbScanner.start(selectedSymbols, masterEnabled);
+  res.json({ success: true, message: 'ORB Scanner started', symbols: selectedSymbols.length });
+});
+
+app.post('/api/orb/stop', (req, res) => {
+  orbScanner.stop();
+  res.json({ success: true, message: 'ORB Scanner stopped' });
 });
 
 // ─────────────────────────────────────────────────────────
@@ -1124,6 +1174,16 @@ function _updateAlertStatus(symbol, status) {
 // START SERVER
 // ─────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
+// Auto-start ORB scanner if master was ON
+if (masterEnabled) {
+  setTimeout(() => {
+    orbScanner.updateConfig(rrConfig);
+    orbScanner.orderExecutor = orderExecutor;
+    orbScanner.start(selectedSymbols, masterEnabled);
+    logger.info('[ORB] Auto-started scanner — Master was ON');
+  }, 5000);
+}
+
 server.listen(PORT, () => {
   logger.info(`
   ╔══════════════════════════════════════════╗
