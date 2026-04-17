@@ -3257,25 +3257,35 @@ export default function App() {
              cryptoLeverage:10, cryptoRiskPct:2, cryptoRRRatio:2, cryptoMaxSL:3 };
   });
 
-  // Saved APIs from localStorage (read-only in main App — ApiCredView manages writes)
-  const [savedApis, setSavedApis] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('orb_apis') || '[]'); } catch(_) { return []; }
-  });
+  // Saved APIs — loaded from server (shared across all devices)
+  const [savedApis, setSavedApis] = useState([]);
 
-  // Keep savedApis in sync when localStorage changes (e.g. from ApiCredView)
+  // Load APIs from server (shared across all devices)
   useEffect(() => {
-    const sync = () => {
+    api.get('/api/saved-apis').then(d => {
+      if (d.success && d.apis) {
+        setSavedApis(d.apis);
+        // Also cache in localStorage for offline
+        try { localStorage.setItem('orb_apis', JSON.stringify(d.apis)); } catch(_) {}
+      }
+    }).catch(() => {
+      // Fallback to localStorage if server unreachable
       try { setSavedApis(JSON.parse(localStorage.getItem('orb_apis') || '[]')); } catch(_) {}
-    };
-    window.addEventListener('storage', sync);
-    // Also poll every 3s for same-tab changes
-    const t = setInterval(sync, 3000);
-    return () => { window.removeEventListener('storage', sync); clearInterval(t); };
+    });
   }, []);
 
-  // Auto-save rrConfig to localStorage whenever it changes
+  // Save APIs to server whenever they change
+  useEffect(() => {
+    if (savedApis.length > 0) {
+      api.post('/api/saved-apis', { apis: savedApis }).catch(() => {});
+      try { localStorage.setItem('orb_apis', JSON.stringify(savedApis)); } catch(_) {}
+    }
+  }, [JSON.stringify(savedApis)]);
+
+  // Auto-save rrConfig to both localStorage and server
   useEffect(() => {
     try { localStorage.setItem('orb_rr_config', JSON.stringify(rrConfig)); } catch(_) {}
+    api.post('/api/risk/config', rrConfig).catch(() => {});
   }, [JSON.stringify(rrConfig)]);
 
   // Load RR from server on boot — server is source of truth
