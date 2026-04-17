@@ -28,6 +28,7 @@ const orbEngine     = require('./modules/orbEngine');
 const orderExecutor = require('./modules/orderExecutor');
 const riskManager   = require('./modules/riskManager');
 const scheduler     = require('./modules/scheduler');
+const ORBScanner    = require('./orbScanner');
 
 // ── Ensure log dir ────────────────────────────────────────
 if (!fs.existsSync('logs')) fs.mkdirSync('logs');
@@ -86,12 +87,23 @@ const savedState    = loadState();
 let selectedSymbols = savedState.selectedSymbols || [];
 let masterEnabled   = savedState.masterEnabled   || false;
 let stockToggles    = savedState.stockToggles    || {};
-let rrConfig        = savedState.rrConfig        || {
-  capital: 50000, leverage: 5, riskPct: 2, rrRatio: 2, maxSLPerDay: 3
+let rrConfig = {
+  capital: 50000, leverage: 5, riskPct: 2, rrRatio: 2, maxSLPerDay: 3,
+  cryptoLeverage: 10, cryptoRiskPct: 2, cryptoRRRatio: 2, cryptoMaxSL: 3,
+  ...(savedState.rrConfig || {})  // overlay saved values on top of defaults
 };
 let alertLog        = [];
 
 logger.info('[STATE] Starting with ' + selectedSymbols.length + ' stocks: ' + selectedSymbols.join(', '));
+
+// ── ORB Scanner (runs 24/7 server-side) ───────────────────
+const orbScanner = new ORBScanner({
+  rrConfig,
+  orderExecutor: null, // set after auth
+  fyersAuth: null,
+  logger,
+  emit: (event, data) => io.emit(event, { ...data, ts: new Date().toISOString() })
+});
 
 // ── Helper: broadcast to all Socket.io clients ────────────
 const emit = (event, data) => io.emit(event, { ...data, ts: new Date().toISOString() });
@@ -403,21 +415,20 @@ app.get('/api/risk/status', (req, res) => {
 
 // GET RR config — used by chart for SL/TGT calculation
 app.get('/api/risk/config', (req, res) => {
-  const cfg = riskManager.getConfig ? riskManager.getConfig() : null;
-  const fallback = {
-    capital:50000,leverage:5,riskPct:2,rrRatio:2,maxSLPerDay:3,
-    cryptoLeverage:10,cryptoRiskPct:2,cryptoRRRatio:2,cryptoMaxSL:3
-  };
-  res.json({ success:true, config: cfg || fallback });
+  // Return actual saved rrConfig from state
+  res.json({ success:true, config: rrConfig });
 });
 
 app.post('/api/risk/config', (req, res) => {
   const cfg = req.body;
-  rrConfig = { ...rrConfig, ...cfg };
+  // Merge ALL fields including crypto
+  rrConfig = Object.assign({}, rrConfig, cfg);
+  orbScanner.updateConfig(rrConfig);
   riskManager.updateConfig(rrConfig);
   orbEngine.updateConfig(rrConfig);
-  emit('configUpdated', rrConfig);
   saveState();
+  emit('configUpdated', rrConfig);
+  logger.info('[RR] Config saved: '+JSON.stringify(rrConfig));
   res.json({ success: true, config: rrConfig });
 });
 
@@ -431,6 +442,15 @@ app.post('/api/risk/resume', (req, res) => {
 app.post('/api/control/master', (req, res) => {
   const { enabled } = req.body;
   masterEnabled = !!enabled;
+  // ORB Scanner follows master
+  orbScanner.setMaster(masterEnabled);
+  if (masterEnabled && !orbScanner.isRunning) {
+    orbScanner.updateConfig(rrConfig);
+    orbScanner.orderExecutor = orderExecutor;
+    orbScanner.start(selectedSymbols, masterEnabled);
+  } else if (!masterEnabled) {
+    orbScanner.stop();
+  }
   orbEngine.setEnabled(masterEnabled);
   logger.info(`[SERVER] Master trading: ${masterEnabled ? 'ON' : 'OFF'}`);
   emit('masterToggle', { enabled: masterEnabled });
@@ -606,7 +626,7 @@ app.get('/api/myip', async (req, res) => {
 // Receives alerts from standalone chart → places broker order
 // ─────────────────────────────────────────────────────────
 app.post('/api/alerts/webhook', async (req, res) => {
-  const { symbol, side, price, type, tf, note, qty, broker, source } = req.body;
+  const { symbol, side, price, type, tf, note, qty, broker, source, sl, tgt } = req.body;
 
   if (!symbol || !side) {
     return res.status(400).json({ success:false, error:'symbol and side required' });
@@ -674,6 +694,14 @@ app.post('/api/alerts/webhook', async (req, res) => {
       });
 
       logger.info(`[WEBHOOK] Fyers order: ${JSON.stringify(result)}`);
+      if(result.success){
+        activeTrades = activeTrades.filter(t => t.symbol !== symbol);
+        if(type==='buy'||type==='sell'){
+          activeTrades.push({ symbol, side:orderSide, entry:price, sl:req.body.sl||null, tgt:req.body.tgt||null, qty:parseInt(qty)||1, broker:'fyers', time:new Date().toISOString(), orderId:result.orderId });
+        } else {
+          activeTrades = activeTrades.filter(t => t.symbol !== symbol);
+        }
+      }
       return res.json({ success:true, broker:'fyers', result, alert:alertEntry });
     }
 
@@ -720,6 +748,14 @@ app.post('/api/alerts/webhook', async (req, res) => {
       });
 
       logger.info(`[WEBHOOK] Delta order: ${JSON.stringify(result)}`);
+      if(result.success !== false){
+        activeTrades = activeTrades.filter(t => t.symbol !== symbol);
+        if(type==='buy'||type==='sell'){
+          activeTrades.push({ symbol, side:orderSide, entry:price, sl:req.body.sl||null, tgt:req.body.tgt||null, qty:parseInt(qty)||1, broker:'delta', time:new Date().toISOString() });
+        } else {
+          activeTrades = activeTrades.filter(t => t.symbol !== symbol);
+        }
+      }
       return res.json({ success:true, broker:'delta', result, alert:alertEntry });
     }
 
@@ -739,6 +775,69 @@ app.post('/api/alerts/webhook', async (req, res) => {
 app.get('/api/alerts/history', (req, res) => {
   const chartAlerts = alertLog.filter(a => a.source === 'chart' || a.msg?.includes('[CHART]'));
   res.json({ success:true, alerts: chartAlerts.slice(-100) });
+});
+
+// ─────────────────────────────────────────────────────────
+// ORB SCANNER API
+// ─────────────────────────────────────────────────────────
+app.get('/api/orb/status', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.json({ success: true, ...orbScanner.getStatus() });
+});
+
+app.get('/api/orb/levels', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.json({ success: true, levels: orbScanner.getLevels() });
+});
+
+app.get('/api/orb/trades', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.json({ success: true, trades: orbScanner.getActiveTrades(), log: orbScanner.getTradeLog() });
+});
+
+app.post('/api/orb/start', (req, res) => {
+  orbScanner.updateConfig(rrConfig);
+  orbScanner.orderExecutor = orderExecutor;
+  orbScanner.start(selectedSymbols, masterEnabled);
+  res.json({ success: true, message: 'ORB Scanner started', symbols: selectedSymbols.length });
+});
+
+app.post('/api/orb/stop', (req, res) => {
+  orbScanner.stop();
+  res.json({ success: true, message: 'ORB Scanner stopped' });
+});
+
+// ─────────────────────────────────────────────────────────
+// WATCHLIST SYNC — chart fetches AlgoBot stock list
+// ─────────────────────────────────────────────────────────
+app.get('/api/stocks/list', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.json({
+    success: true,
+    stocks: selectedSymbols,  // the 10 stocks from AlgoBot
+    count: selectedSymbols.length
+  });
+});
+
+// ─────────────────────────────────────────────────────────
+// ACTIVE TRADES — live positions for dashboard
+// ─────────────────────────────────────────────────────────
+let activeTrades = [];  // {symbol, side, entry, sl, tgt, time, qty, broker}
+
+app.get('/api/trades/active', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.json({ success: true, trades: activeTrades });
+});
+
+app.post('/api/trades/update', (req, res) => {
+  const { symbol, side, entry, sl, tgt, qty, broker, action } = req.body;
+  if (action === 'add') {
+    activeTrades = activeTrades.filter(t => t.symbol !== symbol); // remove old
+    activeTrades.push({ symbol, side, entry, sl, tgt, qty: qty||1, broker: broker||'auto', time: new Date().toISOString() });
+  } else if (action === 'remove') {
+    activeTrades = activeTrades.filter(t => t.symbol !== symbol);
+  }
+  res.json({ success: true, trades: activeTrades });
 });
 
 // ─────────────────────────────────────────────────────────
@@ -1075,6 +1174,16 @@ function _updateAlertStatus(symbol, status) {
 // START SERVER
 // ─────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
+// Auto-start ORB scanner if master was ON
+if (masterEnabled) {
+  setTimeout(() => {
+    orbScanner.updateConfig(rrConfig);
+    orbScanner.orderExecutor = orderExecutor;
+    orbScanner.start(selectedSymbols, masterEnabled);
+    logger.info('[ORB] Auto-started scanner — Master was ON');
+  }, 5000);
+}
+
 server.listen(PORT, () => {
   logger.info(`
   ╔══════════════════════════════════════════╗
