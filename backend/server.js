@@ -810,6 +810,222 @@ app.post('/api/orb/stop', (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
+// ORB SIMULATOR — Replay historical data to verify logic
+// ─────────────────────────────────────────────────────────
+app.post('/api/orb/simulate', async (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  const { symbol, days } = req.body;
+  const sym = symbol || selectedSymbols[0] || 'RELIANCE.NS';
+  const range = days === 1 ? '1d' : days === 5 ? '5d' : '5d';
+
+  try {
+    const yahooSym = sym.replace('NSE:','').replace('-EQ','.NS');
+    const axios = require('axios');
+    const url = 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(yahooSym) + '?interval=5m&range=' + range + '&includePrePost=false';
+    const resp = await axios.get(url, { timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0' } });
+    const result = resp.data?.chart?.result?.[0];
+    if (!result) return res.json({ success: false, error: 'No data from Yahoo' });
+
+    const ts = result.timestamp || [];
+    const q = result.indicators?.quote?.[0] || {};
+    const candles = ts.map((t, i) => ({
+      time: t, open: q.open?.[i], high: q.high?.[i], low: q.low?.[i],
+      close: q.close?.[i], volume: q.volume?.[i] || 0
+    })).filter(c => c.open && c.close && !isNaN(c.close));
+
+    // Group by day
+    const dayMap = {};
+    candles.forEach(c => {
+      const d = new Date(c.time * 1000);
+      const utcM = d.getUTCHours() * 60 + d.getUTCMinutes();
+      const istM = (utcM + 330) % (24 * 60);
+      const istH = Math.floor(istM / 60);
+      const istMn = istM % 60;
+      const dateStr = d.toDateString();
+      if (istH === 9 && istMn >= 15 && istMn <= 20 && !dayMap[dateStr]) {
+        dayMap[dateStr] = { high: c.high, low: c.low, date: dateStr };
+      }
+    });
+
+    // Simulate trades
+    const rp = rrConfig.riskPct || 1;
+    const rr = rrConfig.rrRatio || 2;
+    const cap = rrConfig.capital || 593;
+    const lev = rrConfig.leverage || 4;
+    const trades = [];
+    const firedDays = {};
+
+    candles.forEach(c => {
+      const d = new Date(c.time * 1000);
+      const dateStr = d.toDateString();
+      const utcM = d.getUTCHours() * 60 + d.getUTCMinutes();
+      const istM = (utcM + 330) % (24 * 60);
+      if (istM < 925) return; // skip before 9:25
+
+      const orb = dayMap[dateStr];
+      if (!orb) return;
+      if (!firedDays[dateStr]) firedDays[dateStr] = { buy: false, sell: false, activeTrade: null };
+      const day = firedDays[dateStr];
+
+      // Check active trade SL/TGT
+      if (day.activeTrade) {
+        const t = day.activeTrade;
+        if (t.type === 'buy') {
+          if (c.low <= t.sl) {
+            t.exit = t.sl; t.exitType = 'SL HIT'; t.exitTime = new Date(c.time*1000).toLocaleTimeString('en-IN');
+            t.pnl = (t.sl - t.entry) * t.qty;
+            day.activeTrade = null;
+          } else if (c.high >= t.tgt) {
+            t.exit = t.tgt; t.exitType = 'TGT HIT'; t.exitTime = new Date(c.time*1000).toLocaleTimeString('en-IN');
+            t.pnl = (t.tgt - t.entry) * t.qty;
+            day.activeTrade = null;
+          }
+        } else {
+          if (c.high >= t.sl) {
+            t.exit = t.sl; t.exitType = 'SL HIT'; t.exitTime = new Date(c.time*1000).toLocaleTimeString('en-IN');
+            t.pnl = (t.entry - t.sl) * t.qty;
+            day.activeTrade = null;
+          } else if (c.low <= t.tgt) {
+            t.exit = t.tgt; t.exitType = 'TGT HIT'; t.exitTime = new Date(c.time*1000).toLocaleTimeString('en-IN');
+            t.pnl = (t.entry - t.tgt) * t.qty;
+            day.activeTrade = null;
+          }
+        }
+        return;
+      }
+
+      // Check breakout
+      const isBuy = (c.close > orb.high) && (c.low <= orb.high);
+      const isSell = (c.close < orb.low) && (c.high >= orb.low);
+
+      if (isBuy && !day.buy) {
+        day.buy = true;
+        const entry = c.close;
+        const slD = entry * rp / 100;
+        const effCap = cap * lev;
+        const riskAmt = effCap * rp / 100;
+        const qty = Math.max(1, Math.floor(riskAmt / slD));
+        const trade = {
+          date: dateStr,
+          type: 'BUY',
+          entry: parseFloat(entry.toFixed(2)),
+          sl: parseFloat((entry - slD).toFixed(2)),
+          tgt: parseFloat((entry + slD * rr).toFixed(2)),
+          qty,
+          entryTime: new Date(c.time*1000).toLocaleTimeString('en-IN'),
+          orbHigh: orb.high, orbLow: orb.low,
+          exit: null, exitType: 'OPEN', exitTime: null, pnl: 0
+        };
+        trades.push(trade);
+        day.activeTrade = trade;
+      }
+
+      if (isSell && !day.sell) {
+        day.sell = true;
+        const entry = c.close;
+        const slD = entry * rp / 100;
+        const effCap = cap * lev;
+        const riskAmt = effCap * rp / 100;
+        const qty = Math.max(1, Math.floor(riskAmt / slD));
+        const trade = {
+          date: dateStr,
+          type: 'SELL',
+          entry: parseFloat(entry.toFixed(2)),
+          sl: parseFloat((entry + slD).toFixed(2)),
+          tgt: parseFloat((entry - slD * rr).toFixed(2)),
+          qty,
+          entryTime: new Date(c.time*1000).toLocaleTimeString('en-IN'),
+          orbHigh: orb.high, orbLow: orb.low,
+          exit: null, exitType: 'OPEN', exitTime: null, pnl: 0
+        };
+        trades.push(trade);
+        day.activeTrade = trade;
+      }
+    });
+
+    // Summary
+    const totalPnl = trades.reduce((s, t) => s + (t.pnl || 0), 0);
+    const wins = trades.filter(t => t.pnl > 0).length;
+    const losses = trades.filter(t => t.pnl < 0).length;
+    const open = trades.filter(t => t.exitType === 'OPEN').length;
+
+    res.json({
+      success: true,
+      symbol: sym,
+      daysScanned: Object.keys(dayMap).length,
+      orbLevels: dayMap,
+      trades,
+      summary: {
+        totalTrades: trades.length,
+        wins, losses, open,
+        totalPnl: parseFloat(totalPnl.toFixed(2)),
+        winRate: trades.length ? ((wins / (wins + losses)) * 100).toFixed(1) + '%' : '0%',
+        rrConfig: { capital: cap, leverage: lev, riskPct: rp, rrRatio: rr }
+      }
+    });
+  } catch (e) {
+    res.json({ success: false, error: e.message });
+  }
+});
+
+// Simulate ALL stocks at once
+app.post('/api/orb/simulate-all', async (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  const results = [];
+  for (const sym of selectedSymbols) {
+    try {
+      const yahooSym = sym.replace('NSE:','').replace('-EQ','.NS');
+      // Reuse single stock simulate logic via internal call
+      const mockReq = { body: { symbol: yahooSym, days: 5 } };
+      const mockRes = {
+        _data: null,
+        header: () => {},
+        json: (d) => { mockRes._data = d; }
+      };
+      // Quick inline simulation
+      const axios = require('axios');
+      const url = 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(yahooSym) + '?interval=5m&range=5d&includePrePost=false';
+      const resp = await axios.get(url, { timeout: 8000, headers: { 'User-Agent': 'Mozilla/5.0' } });
+      const result = resp.data?.chart?.result?.[0];
+      if (!result) { results.push({ symbol: yahooSym, error: 'No data' }); continue; }
+
+      const ts = result.timestamp || [];
+      const q = result.indicators?.quote?.[0] || {};
+      const candles = ts.map((t, i) => ({
+        time: t, open: q.open?.[i], high: q.high?.[i], low: q.low?.[i],
+        close: q.close?.[i], volume: q.volume?.[i] || 0
+      })).filter(c => c.open && c.close);
+
+      // Find ORB levels per day
+      const dayMap = {};
+      candles.forEach(c => {
+        const d = new Date(c.time * 1000);
+        const istM = ((d.getUTCHours() * 60 + d.getUTCMinutes()) + 330) % (24 * 60);
+        const istH = Math.floor(istM / 60), istMn = istM % 60;
+        const ds = d.toDateString();
+        if (istH === 9 && istMn >= 15 && istMn <= 20 && !dayMap[ds]) dayMap[ds] = { high: c.high, low: c.low };
+      });
+
+      // Count signals
+      const frd = {};
+      let buys = 0, sells = 0;
+      candles.forEach(c => {
+        const ds = new Date(c.time * 1000).toDateString();
+        const orb = dayMap[ds]; if (!orb) return;
+        if (!frd[ds]) frd[ds] = {};
+        if ((c.close > orb.high) && (c.low <= orb.high) && !frd[ds].b) { frd[ds].b = true; buys++; }
+        if ((c.close < orb.low) && (c.high >= orb.low) && !frd[ds].s) { frd[ds].s = true; sells++; }
+      });
+
+      results.push({ symbol: yahooSym, days: Object.keys(dayMap).length, buys, sells, totalSignals: buys + sells });
+    } catch (e) {
+      results.push({ symbol: sym, error: e.message });
+    }
+  }
+  res.json({ success: true, results, stockCount: selectedSymbols.length });
+});
+
+// ─────────────────────────────────────────────────────────
 // SAVED APIs — server-side storage (visible on all devices)
 // ─────────────────────────────────────────────────────────
 app.get('/api/saved-apis', (req, res) => {
