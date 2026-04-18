@@ -1320,6 +1320,26 @@ function ApiCredView({ authStatus, onApisChange }) {
           const errText = err?.message || String(err);
           setMsg({ type:'error', text: '❌ Delta: ' + errText });
         }
+      } else if (a.brokerId === 'angelone') {
+        try {
+          setConnStatus(p => ({...p, [a.id]: 'connecting'}));
+          const ff = a.fields || {};
+          const r = await api.post('/api/auth/angelone/connect', {
+            apiKey: ff['API Key'] || '',
+            clientCode: ff['Client Code'] || '',
+            pin: ff['PIN'] || '',
+            totpSecret: ff['TOTP Key'] || ''
+          });
+          if (r.success) {
+            setConnStatus(p => ({...p, [a.id]: 'connected'}));
+            setMsg({ type:'success', text: '✅ AngelOne connected! ' + (r.profile?.name || r.profile?.clientcode || '') });
+          } else {
+            throw new Error(r.error || 'Connection failed');
+          }
+        } catch(err) {
+          setConnStatus(p => ({...p, [a.id]: 'error'}));
+          setMsg({ type:'error', text: '❌ AngelOne: ' + (err?.message || String(err)) });
+        }
       } else {
         setMsg({ type:'info', text: a.name + ' — paste access token in the edit form.' });
         setConnStatus(p => ({...p, [a.id]: 'idle'}));
