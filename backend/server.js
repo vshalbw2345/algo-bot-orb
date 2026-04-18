@@ -29,6 +29,8 @@ const orderExecutor = require('./modules/orderExecutor');
 const riskManager   = require('./modules/riskManager');
 const scheduler     = require('./modules/scheduler');
 const ORBScanner    = require('./orbScanner');
+const ORBEngineV2   = require('./orbEngine_v2');
+const orbEngineV2   = new ORBEngineV2();
 
 // ── Ensure log dir ────────────────────────────────────────
 if (!fs.existsSync('logs')) fs.mkdirSync('logs');
@@ -782,6 +784,77 @@ app.get('/api/alerts/history', (req, res) => {
 // ─────────────────────────────────────────────────────────
 // ORB SCANNER API
 // ─────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────
+// UNIFIED ORB ENGINE — Single source of truth
+// All 3 apps (AlgoBot, Chart, Backtest) call this
+// ─────────────────────────────────────────────────────────
+app.post('/api/orb/check', async (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  const { symbol, date, tf } = req.body;
+  if (!symbol) return res.json({ success: false, error: 'Symbol required' });
+
+  try {
+    const axios = require('axios');
+    const yahooSym = symbol.replace('NSE:', '').replace('-EQ', '.NS');
+    const range = date ? '5d' : '1d';
+    const interval = tf || '5m';
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?interval=${interval}&range=${range}&includePrePost=false`;
+    const resp = await axios.get(url, { timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0' } });
+    const result = resp.data?.chart?.result?.[0];
+    if (!result) return res.json({ success: false, error: 'No data from Yahoo' });
+
+    const ts = result.timestamp || [];
+    const q = result.indicators?.quote?.[0] || {};
+    let candles = ts.map((t, i) => ({
+      time: t, open: q.open?.[i], high: q.high?.[i], low: q.low?.[i],
+      close: q.close?.[i], volume: q.volume?.[i] || 0
+    })).filter(c => c.open && c.close && !isNaN(c.close));
+
+    // Filter by date if specified
+    if (date) {
+      const targetDate = new Date(date).toDateString();
+      const filtered = candles.filter(c => new Date(c.time * 1000).toDateString() === targetDate);
+      if (filtered.length) candles = filtered;
+    }
+
+    // Run unified ORB engine
+    const output = orbEngineV2.process(candles, rrConfig);
+    res.json({ success: true, symbol: yahooSym, ...output });
+  } catch (e) {
+    res.json({ success: false, error: e.message });
+  }
+});
+
+// Check ALL selected stocks through unified engine
+app.post('/api/orb/check-all', async (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  const results = [];
+  const axios = require('axios');
+
+  for (const sym of selectedSymbols) {
+    try {
+      const yahooSym = sym.replace('NSE:', '').replace('-EQ', '.NS');
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?interval=5m&range=5d&includePrePost=false`;
+      const resp = await axios.get(url, { timeout: 8000, headers: { 'User-Agent': 'Mozilla/5.0' } });
+      const result = resp.data?.chart?.result?.[0];
+      if (!result) { results.push({ symbol: yahooSym, error: 'No data' }); continue; }
+
+      const ts = result.timestamp || [];
+      const q = result.indicators?.quote?.[0] || {};
+      const candles = ts.map((t, i) => ({
+        time: t, open: q.open?.[i], high: q.high?.[i], low: q.low?.[i],
+        close: q.close?.[i], volume: q.volume?.[i] || 0
+      })).filter(c => c.open && c.close);
+
+      const output = orbEngineV2.process(candles, rrConfig);
+      results.push({ symbol: yahooSym, ...output.summary, signals: output.signals.length });
+    } catch (e) {
+      results.push({ symbol: sym, error: e.message });
+    }
+  }
+  res.json({ success: true, results });
+});
+
 app.get('/api/orb/status', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.json({ success: true, ...orbScanner.getStatus() });
