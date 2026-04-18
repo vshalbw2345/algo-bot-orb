@@ -3748,9 +3748,7 @@ function App() {
               ticks={ticks} orbLevels={orbLevels} riskStatus={riskStatus}
               rrConfig={rrConfig} masterOn={masterOn} socketConnected={socketConnected} />
           )}
-          {activeView==='simulate' && (
-            <ORBSimView selectedSymbols={selectedSymbols} rrConfig={rrConfig} />
-          )}
+  
           {activeView==='syntax' && <SyntaxGenView selectedSymbols={selectedSymbols} />}
         </div>
       </div>
