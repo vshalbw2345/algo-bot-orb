@@ -3460,10 +3460,9 @@ function App() {
     }
   }, [JSON.stringify(savedApis)]);
 
-  // Auto-save rrConfig to both localStorage and server
+  // Auto-save rrConfig to localStorage only (server save on manual button click)
   useEffect(() => {
     try { localStorage.setItem('orb_rr_config', JSON.stringify(rrConfig)); } catch(_) {}
-    api.post('/api/risk/config', rrConfig).catch(() => {});
   }, [JSON.stringify(rrConfig)]);
 
   // Load RR from server on boot — server is source of truth
