@@ -31,6 +31,18 @@ const scheduler     = require('./modules/scheduler');
 const ORBScanner    = require('./orbScanner');
 const ORBEngineV2   = require('./orbEngine_v2');
 const orbEngineV2   = new ORBEngineV2();
+const candleEngine = require('./candleEngine');
+
+app.get('/api/chart/history', (req, res) => {
+  const { symbol, tf } = req.query;
+
+  const candles = candleEngine.getCandles(symbol, tf || '5m');
+
+  res.json({
+    success: true,
+    candles: candles.slice(-500)
+  });
+});
 
 // ── Ensure log dir ────────────────────────────────────────
 if (!fs.existsSync('logs')) fs.mkdirSync('logs');
