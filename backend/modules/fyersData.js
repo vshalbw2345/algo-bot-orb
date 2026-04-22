@@ -2,7 +2,6 @@
 // Uses official fyers-api-v3 DataSocket
 const EventEmitter = require('events');
 const logger = require('./logger');
-const candleEngine = require('./candleEngine');
 
 class FyersDataFeed extends EventEmitter {
   constructor() {
