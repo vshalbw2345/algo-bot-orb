@@ -1289,50 +1289,13 @@ io.on('connection', (socket) => {
 // ─────────────────────────────────────────────────────────
 // WIRE: DATA FEED → ORB ENGINE → ORDER EXECUTOR
 // ─────────────────────────────────────────────────────────
-// ─────────────────────────────────────────
-// LIVE CANDLE ENGINE (NEW ADD)
-// ─────────────────────────────────────────
 
-const liveCandles = {}; // { symbol: current candle }
-
-function updateLiveCandle(symbol, price, ts) {
-  const tf = 60; // 1 min
-
-  const bucket = Math.floor(ts / tf) * tf;
-
-  if (!liveCandles[symbol] || liveCandles[symbol].time !== bucket) {
-    liveCandles[symbol] = {
-      time: bucket,
-      open: price,
-      high: price,
-      low: price,
-      close: price
-    };
-  } else {
-    const c = liveCandles[symbol];
-    c.high = Math.max(c.high, price);
-    c.low = Math.min(c.low, price);
-    c.close = price;
-  }
-
-  return liveCandles[symbol];
-}
 // Every tick from Fyers → ORB engine + broadcast to clients
 fyersData.on('tick', ({ symbol, tick }) => {
   orbEngine.onTick(symbol, tick);
 
-  // Extract price
-  const price = tick.ltp;
-  const ts = Math.floor(Date.now() / 1000);
-
-  // Build candle
-  const candle = updateLiveCandle(symbol, price, ts);
-
-  // Send RAW tick (existing)
+  // Broadcast live tick to all connected clients (throttled)
   io.volatile.emit('tick', { symbol, tick });
-
-  // Send LIVE candle (NEW)
-  io.emit('liveCandle', { symbol, candle });
 });
 
 fyersData.on('connected', () => {
