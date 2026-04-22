@@ -109,16 +109,4 @@ class FyersDataFeed extends EventEmitter {
   }
 }
 
-
-this.socket.on('message', (msg) => {
-  if (!msg || !msg.symbol) return;
-
-  const tick = this._normaliseTick(msg);
-
-  // ✅ ADD THIS LINE (IMPORTANT)
-  candleEngine.update(tick.symbol, tick);
-
-  this.lastTick[tick.symbol] = tick;
-  this.emit('tick', { symbol: tick.symbol, tick });
-});
 module.exports = new FyersDataFeed();
